@@ -1,68 +1,91 @@
-# MS Music: Mass Spectrometry Data Sonification
+# ms_music: Mass Spectrometry Data Sonification
 
-**Version: 0.1.0**
+**Version: 0.2.0**
 
-`ms_music` is a Python package designed to transform mass spectrometry data from `.mzML` files into audible sound. This process, known as sonification, can provide a novel way to explore and interpret complex scientific data. The package offers various methods for sound generation and allows for the application of several audio effects to customize the output.
+`ms_music` is a  Python package for transforming mass spectrometry data into "music". This sonification toolkit goes beyond simple data-to-sound conversion, offering musical quantization, extensive effects processing, MIDI generation, and visualization.
 
 ## Table of Contents
 
-1.  [Features](#features)
-2.  [Installation](#installation)
-    * [Prerequisites](#prerequisites)
-    * [Steps](#steps)
-3.  [Quick Start](#quick-start)
-4.  [Detailed Usage](#detailed-usage)
-    * [Initialization](#initialization)
-    * [Loading and Preprocessing Data](#loading-and-preprocessing-data)
-    * [Sonification Methods](#sonification-methods)
-    * [Applying Audio Effects via `sonifier.apply_effect`](#applying-audio-effects-via-sonifierapply_effect)
-        * [Standard Effects](#standard-effects)
-        * [Experimental Effects](#experimental-effects)
-    * [Using Additional Creative Effects Directly](#using-additional-creative-effects-directly)
-    * [Saving Audio](#saving-audio)
-5.  [Examples in Jupyter Notebook](#examples-in-jupyter-notebook)
-6.  [Contributing](#contributing)
-7.  [License](#license)
+1. [Features](#features)
+2. [Installation](#installation)
+3. [Quick Start](#quick-start)
+4. [Detailed Usage](#detailed-usage)
+   * [Basic Sonification](#basic-sonification)
+   * [Musical Quantization](#musical-quantization)
+   * [Frequency Mappings](#frequency-mappings)
+   * [Audio Effects Processing](#audio-effects-processing)
+   * [MIDI Generation](#midi-generation)
+   * [Visualization](#visualization)
+   * [FID Data Processing](#fid-data-processing)
+5. [Examples](#examples)
+6. [Contributing](#contributing)
+7. [License](#license)
 
 ## Features
 
-* **MZML File Input**: Supports loading of standard `.mzML` files.
-* **MS Level Selection**: Process data from MS1 or MS2 levels.
-* **Data Preprocessing**: Rounds m/z values, groups intensities, and normalizes data.
-* **Flexible Sonification Strategies**:
-    * **Gradient Method**: Continuous sine waves for each m/z, amplitude modulated by intensity with smooth transitions.
-    * **ADSR Method**: Each scan is an event shaped by an ADSR envelope, suitable for rhythmic or articulated sounds.
-* **Audio Effects Suite**:
-    * **Standard Effects (via `sonifier.apply_effect`)**: HPSS, Notch Filter, Butterworth Filter, Chebyshev Type I Filter.
-    * **Experimental Effects (via `sonifier.apply_effect`)**: Functional implementations derived from original scripts, including a time-varying PLL filter, LMS modulation, spectral analysis FM, phase vocoder (pitch/time stretch), and FFT-based filtering. Use with awareness of their experimental nature.
-    * **Additional Creative Effects (direct use from `additional_sound_modifiers.py`)**: Granular synthesis, pitch shifting, time stretching, algorithmic reverb, and chorus effects.
-* **Customizable Output**: Control total audio duration and sample rate.
-* **WAV File Export**: Save sonified audio as `.wav` files.
+### Core Sonification
+* **mzML File Support**: Load and process standard `.mzML` files with MS1/MS2 level selection
+* **Sonification Methods**:
+  - **Gradient Method**: Continuous sine wave synthesis with smooth intensity transitions
+  - **ADSR Method**: Event-based synthesis with customizable envelope shaping
+* **Multiple Frequency Mappings**: `inverse_log`, `power_law`, `musical_octaves`, `chromatic`, `linear`
+
+### Musical Methods
+* **Musical Scale Quantization**: Transform raw frequencies into musical scales
+  - Traditional Western scales: major, minor, pentatonic, blues, dorian, mixolydian, whole-tone, and more
+  - Microtonal systems: 19-EDO, 24-EDO, 31-EDO, 53-EDO, and custom divisions
+  - Just intonation with pure frequency ratios
+  - Traditional non-Western scales: Arabic maqam, Turkish makam, Indian raga approximations
+* **Advanced Tuning Systems**: Support for equal temperament, just intonation, and custom tuning
+* **Metrical Quantization**: Align timing to musical meters (4/4, 3/4, 6/8, 5/4, 7/8, etc.)
+
+### Audio Effects
+* **Filters**: Lowpass, highpass, bandpass, notch, parametric EQ, graphic EQ
+* **Time-based Effects**: Reverb, delay, echo, chorus, flanger, phaser
+* **Dynamics**: Compressor, gate, limiter, expander, multiband compressor
+* **Distortion**: Overdrive, fuzz, bitcrusher, waveshaper with multiple curve types
+* **Modulation**: Tremolo, vibrato, ring modulation, auto-wah
+* **Spectral Processing**: HPSS separation, pitch shifting, time stretching, formant shifting
+* **Creative Effects**: Granular synthesis, convolution reverb, spectral filtering
+
+### MIDI Generation
+* **Musical MIDI Export**: Generate MIDI files with proper musical timing and scales
+* **Peak Detection**: Peak detection with retention time mapping
+* **Configurable Parameters**: Tempo, time signatures, instruments, quantization modes
+* **Analysis Tools**: Reporting and note data export
+
+### Visualization Suite
+* **Spectrograms**: 2D and 3D spectrogram visualizations
+* **Comparative Analysis**: Waveform, frequency spectrum, and feature comparisons
+* **Musical Analysis**: Chromagrams, MFCC evolution, pitch class distributions
+* **Data Insights**: m/z mapping visualizations, scan progression, similarity matrices
+
+### Additional Capabilities
+* **FID Data Processing**: Support for FID data processing
+* **Extensive Customization**: Fine-tune every aspect of the sonification process
+* **Professional Output**: High-quality WAV export with normalization options
 
 ## Installation
 
 ### Prerequisites
+* Python 3.8 or higher
+* `pip` package manager
 
-* Python 3.8 or higher.
-* `pip` for package installation.
+### Installation Steps
 
-### Steps
+1. **Install from source:**
+   ```bash
+   git clone https://github.com/mmattano/ms_music.git
+   cd ms_music
+   pip install .
+   ```
 
-1.  **Clone the repository or download the package files:**
-    ```bash
-    # If you have a git repository for ms_music:
-    # git clone <your_repository_url_for_ms_music>
-    # cd ms_music
-    # Otherwise, ensure all package files (setup.py, ms_music/) are in a directory.
-    ```
-    Navigate to the root directory of the package (where `setup.py` is located).
-
-2.  **Install the package and its dependencies:**
-    From the root directory, run:
-    ```bash
-    pip install .
-    ```
-    This command installs `ms_music` and automatically handles dependencies: `numpy`, `pandas`, `matchms>=0.25.0`, `wavio`, `librosa>=0.9.0`, `scipy`, `tqdm`.
+2. **Dependencies** (automatically installed):
+   - Core: `numpy`, `pandas`, `scipy`, `matplotlib`, `tqdm`
+   - MS data: `matchms>=0.25.0`
+   - Audio: `librosa>=0.9.0`
+   - MIDI: `mido>=1.2.10`
+   - Visualization: `seaborn>=0.11.0`
 
 ## Quick Start
 
@@ -70,169 +93,360 @@
 from ms_music import MSSonifier
 import os
 
-# Configuration
-mzml_file = "path/to/your/data.mzML" # Replace with your actual file path
-output_dir = "audio_output_quickstart"
+# Setup
+mzml_file = "path/to/your/data.mzML"  # Replace with your file
+output_dir = "ms_music_output"
 os.makedirs(output_dir, exist_ok=True)
 
-if not os.path.exists(mzml_file):
-    print(f"Error: mzML file not found at {mzml_file}. Please provide a valid path.")
-else:
-    # Initialize
-    sonifier = MSSonifier(
-        filepath=mzml_file,
-        ms_level=1,
-        total_duration_minutes=0.25, # Keep duration short for quick tests (15 seconds)
-        sample_rate=44100
-    )
+# Initialize sonifier
+sonifier = MSSonifier(
+    filepath=mzml_file,
+    ms_level=1,                     # MS1 data
+    total_duration_minutes=0.5,     # 30 seconds of audio
+    sample_rate=44100
+)
 
-    # Load and preprocess
-    sonifier.load_and_preprocess_data()
+# Load and process data
+sonifier.load_and_preprocess_data()
 
-    if sonifier.processed_spectra_dfs: # Check if data processing was successful
-        # Sonify using the gradient method
-        sonifier.sonify(method='gradient')
+# Create musical sonification
+sonifier.sonify_quantized(
+    base_mapping='inverse_log',
+    method_params={
+        'scale': 'pentatonic_major',
+        'root_note': 'C',
+        'freq_range': (200, 2000)
+    }
+)
 
-        # Apply a simple low-pass filter
-        sonifier.apply_effect('butterworth_filter', 
-                              effect_params={'cutoff_freq': 1200, 'btype': 'low'})
+# Apply professional effects
+sonifier.apply_effect('reverb', {'reverb_time_s': 1.5, 'dry_wet_mix': 0.3})
+sonifier.apply_effect('compressor', {'threshold_db': -15, 'ratio': 3})
 
-        # Save the audio
-        output_path = os.path.join(output_dir, "quick_start_ms_sound.wav")
-        sonifier.save_audio(output_path)
-        print(f"Sonification complete! Audio saved to {output_path}")
-    else:
-        print("Data loading or preprocessing failed. Cannot sonify.")
+# Save the result
+sonifier.save_audio(os.path.join(output_dir, "ms_music.wav"))
+print("Musical sonification complete!")
 ```
 
-## Detailed Usage
+## Detailed Use
 
-### Initialization
+### Basic Sonification
 
 ```python
 from ms_music import MSSonifier
 
+# Initialize
 sonifier = MSSonifier(
-    filepath="path/to/your/data.mzML",
-    ms_level=1,  # MS level (1 or 2)
-    total_duration_minutes=1.0,  # Desired audio duration in minutes
-    sample_rate=44100  # Standard audio sample rate
+    filepath="data.mzML",
+    ms_level=1,
+    total_duration_minutes=1.0,
+    sample_rate=44100
+)
+
+# Load data
+sonifier.load_and_preprocess_data()
+
+# Basic sonification with different frequency mappings
+sonifier.sonify(
+    method='gradient',
+    method_params={
+        'frequency_mapping': 'inverse_log',  # or 'power_law', 'musical_octaves', 'chromatic', 'linear'
+        'freq_range': (200, 4000),
+        'overlap_percentage': 0.05
+    }
+)
+
+# ADSR method for more rhythmic results
+sonifier.sonify(
+    method='adsr',
+    method_params={
+        'frequency_mapping': 'musical_octaves',
+        'adsr_settings': {
+            'attack': 0.01,
+            'decay': 0.1,
+            'sustain': 0.7,
+            'release': 0.2
+        }
+    }
 )
 ```
 
-### Loading and Preprocessing Data
+### Musical Quantization
 
-Load the `.mzML` file and preprocess the spectral data.
+Transform raw frequencies into proper musical scales:
+
 ```python
-# Process all scans from the specified MS level
-sonifier.load_and_preprocess_data()
+# Setup musical quantization
+sonifier.setup_musical_quantization(
+    scale="major",          # or "minor", "pentatonic_major", "blues", etc.
+    root_note="C",          # Root note of the scale
+    tuning_freq=440.0,      # A4 frequency
+    freq_range=(200, 3000)
+)
 
-# Or, process a specific segment (e.g., scans from 25% to 75% of the file)
-# sonifier.load_and_preprocess_data(scan_ratio_range=(0.25, 0.75))
+# Sonify with quantization
+sonifier.sonify_quantized(
+    base_mapping='inverse_log',
+    method_params={
+        'scale': 'dorian',
+        'root_note': 'D',
+        'use_log_distance': True
+    }
+)
+
+# Explore microtonal scales
+from ms_music.musical_quantization import MusicalNoteQuantizer
+
+# List available scales
+MusicalNoteQuantizer.list_available_scales()
+
+# Use 19-tone equal temperament
+sonifier.sonify_quantized(
+    base_mapping='power_law',
+    method_params={
+        'scale': '19_edo_diatonic',
+        'root_note': 'C'
+    }
+)
 ```
 
-### Sonification Methods
-
-Generate base audio using one of the available methods:
-* **`gradient` method**: `sonifier.sonify(method='gradient', method_params={'overlap_percentage': 0.05})`
-    * `overlap_percentage` (float, 0.0 to 1.0): Controls intensity fade duration between scans.
-* **`adsr` method**: `sonifier.sonify(method='adsr', method_params={'adsr_settings': adsr_config_dict})`
-    * `adsr_config_dict` (dict): Specifies `'attack_time_pc'`, `'decay_time_pc'`, `'sustain_level_pc'`, `'release_time_pc'`, and `'randomize'` (bool). See `audio_generator.py` or notebook for defaults.
-
-### Applying Audio Effects via `sonifier.apply_effect`
-
-Effects modify the `sonifier.current_audio_data`. They are applied sequentially if multiple calls are made.
-
-#### Standard Effects
-
-* **HPSS (Harmonic-Percussive Source Separation)**:
-  `sonifier.apply_effect('hpss', effect_params={'margin': 16, 'harmonic': True, 'percussive': False})`
-    * `margin` (float): Separation margin.
-    * `harmonic` (bool): Output harmonic component.
-    * `percussive` (bool): Output percussive component.
-* **Notch Filter**:
-  `sonifier.apply_effect('notch_filter', effect_params={'notch_freq': 1000, 'quality_factor': 10})`
-    * `notch_freq` (float): Center frequency to attenuate (Hz).
-    * `quality_factor` (float): Q-factor (bandwidth of notch).
-* **Butterworth Filter**:
-  `sonifier.apply_effect('butterworth_filter', effect_params={'cutoff_freq': 800, 'btype': 'low', 'order': 4})`
-    * `cutoff_freq` (float or tuple): Cutoff(s) in Hz.
-    * `btype` (str): `'low'`, `'high'`, `'bandpass'`, `'bandstop'`.
-    * `order` (int): Filter order.
-    * `gustafson_method` (bool): Use Gustafson's method for `filtfilt`.
-* **Chebyshev Type I Filter**:
-  `sonifier.apply_effect('chebyshev1_filter', effect_params={'cutoff_freq': 1500, 'ripple_db': 1, 'btype': 'low', 'order': 4})`
-    * `cutoff_freq` (float or tuple): Cutoff(s) in Hz.
-    * `ripple_db` (float): Max passband ripple in dB (must be > 0).
-    * `btype` (str): Filter type.
-    * `order` (int): Filter order.
-
-#### Experimental Effects
-These effects are functional implementations based on the original `complex.py` script. They may produce unique sounds but can be sensitive to parameters and input audio. **Use with exploration in mind.**
-
-* **PLL Time-Varying Filter**: `sonifier.apply_effect('experimental_pll_filter', effect_params={'center_freq': 500, 'loop_bandwidth_hz': 20, ...})`
-    * `center_freq` (float): Initial NCO frequency.
-    * `loop_bandwidth_hz` (float): PLL loop responsiveness.
-    * `damping_factor` (float): PLL loop damping.
-    * `output_filter_freq_offset_hz` (float): Offset for the output LPF cutoff from NCO frequency.
-    * `output_filter_min_freq_hz`, `output_filter_max_freq_hz` (float): Clamping for output LPF cutoff.
-* **LMS Modulation**: `sonifier.apply_effect('experimental_lms_modulation', effect_params={'n_segments': 100, 'mu': 0.05})`
-    * `n_segments` (int): Number of audio segments for LMS adaptation.
-    * `mu` (float): LMS adaptation rate.
-* **Spectral Analysis FM**: `sonifier.apply_effect('experimental_spectral_analysis_fm', effect_params={})`
-    * Uses Welch's method to find dominant frequency for FM modulation. Parameters are mostly internal.
-* **Phase Vocoder (Pitch/Time)**: `sonifier.apply_effect('experimental_phase_vocoder_modulation', effect_params={'stretch_factor': 1.0, 'pitch_shift_semitones': 0.0})`
-    * `n_fft` (int): FFT window size.
-    * `hop_length` (int): Hop length for STFT.
-    * `stretch_factor` (float): Time stretch factor (>1 slows, <1 speeds up).
-    * `pitch_shift_semitones` (float): Pitch shift in semitones.
-* **FFT Filter**: `sonifier.apply_effect('experimental_fft_filter', effect_params={'threshold_factor': 0.01})`
-    * `threshold_factor` (float): Relative threshold (0-1) for zeroing out FFT coefficients based on max coefficient.
-
-### Using Additional Creative Effects Directly
-These effects are provided in `ms_music/additional_sound_modifiers.py`. They are used by importing the module and calling the functions directly on a NumPy audio array (e.g., obtained from `sonifier.get_current_audio()`).
+### Frequency Mappings
 
 ```python
-from ms_music import additional_sound_modifiers as creative_fx
-# ... (after sonifier has generated some audio)
-current_audio = sonifier.get_current_audio() 
-if current_audio is not None:
-    # Example: Apply granular synthesis
-    granular_audio = creative_fx.apply_granular_synthesis(
-        current_audio, 
-        sonifier.sample_rate, 
-        grain_duration_ms=40, 
-        density=1.5,
-        pitch_variation_semitones=1.0
+# Different mapping approaches for varied sonic results
+mappings = ['inverse_log', 'power_law', 'musical_octaves', 'chromatic', 'linear']
+
+for mapping in mappings:
+    sonifier.sonify(
+        method='gradient',
+        method_params={
+            'frequency_mapping': mapping,
+            'freq_range': (200, 4000)
+        }
     )
-    # 'granular_audio' can now be saved or further processed
-    # sonifier.current_audio_data = granular_audio # Optionally update sonifier's buffer
-    # sonifier.save_audio("granular_output.wav")
+    sonifier.save_audio(f"ms_sound_{mapping}.wav")
 ```
-* **Granular Synthesis**: `creative_fx.apply_granular_synthesis(audio, sr, grain_duration_ms, density, pitch_variation_semitones, output_duration_factor)`
-* **Pitch Shift (Librosa-based)**: `creative_fx.apply_pitch_shift(audio, sr, n_steps)`
-* **Time Stretch (Librosa-based)**: `creative_fx.apply_time_stretch(audio, sr, rate)`
-* **Reverb**: `creative_fx.apply_reverb(audio, sr, reverb_time_s, decay_factor, dry_wet_mix)`
-* **Chorus**: `creative_fx.apply_chorus(audio, sr, delay_ms, depth_ms, rate_hz, dry_wet_mix, num_voices)`
 
-### Saving Audio
+### Audio Effects Processing
+
+Apply audio effects:
+
 ```python
-sonifier.save_audio("output_filename.wav") # Normalizes to 16-bit by default
-# sonifier.save_audio("output_filename.wav", normalize=False) # To save as-is
+# Time-based effects
+sonifier.apply_effect('reverb', {
+    'reverb_time_s': 2.0,
+    'room_size': 0.8,
+    'dry_wet_mix': 0.4
+})
+
+sonifier.apply_effect('chorus', {
+    'delay_ms': 20,
+    'depth_ms': 3,
+    'rate_hz': 0.5,
+    'num_voices': 3
+})
+
+# Dynamics processing
+sonifier.apply_effect('compressor', {
+    'threshold_db': -20,
+    'ratio': 4,
+    'attack_ms': 10,
+    'release_ms': 100
+})
+
+# Spectral effects
+sonifier.apply_effect('pitch_shift', {'n_steps': 2})  # Up 2 semitones
+sonifier.apply_effect('hpss', {'harmonic': True})     # Extract harmonics
+
+# Creative effects
+sonifier.apply_effect('granular_synthesis', {
+    'grain_size_ms': 50,
+    'grain_density': 1.5,
+    'pitch_variation_semitones': 2.0
+})
+
+# EQ and filtering
+sonifier.apply_effect('parametric_eq', {
+    'frequency_hz': 1000,
+    'gain_db': 6,
+    'q_factor': 2
+})
+
+# Chain multiple effects
+effects_chain = [
+    ('highpass_filter', {'cutoff_freq': 80}),
+    ('compressor', {'threshold_db': -15, 'ratio': 3}),
+    ('chorus', {'delay_ms': 25}),
+    ('reverb', {'reverb_time_s': 1.5}),
+    ('limiter', {'threshold_db': -1})
+]
+
+for effect_name, params in effects_chain:
+    sonifier.apply_effect(effect_name, params)
 ```
 
-## Examples in Jupyter Notebook
-A comprehensive Jupyter Notebook, `examples.ipynb`, is provided with the package. It showcases:
-* Loading data.
-* Using both sonification methods.
-* Applying all standard and experimental effects available via `sonifier.apply_effect`.
-* Demonstrating how to use functions from `additional_sound_modifiers.py` directly.
-* Visualizing spectrograms.
+### MIDI Generation
 
-Please refer to this notebook for practical examples and to hear the effects in action.
+Generate MIDI files with proper timing and scales:
+
+```python
+from ms_music import MSSonifierMidi, MidiConfig, MusicMeter, QuantizationMode
+
+# Configure MIDI generation
+config = MidiConfig(
+    scale="major",
+    root_note="C",
+    tempo=120,
+    meter=MusicMeter.FOUR_FOUR,
+    quantization_mode=QuantizationMode.STRICT_GRID
+)
+
+# Initialize MIDI sonifier
+midi_sonifier = MSSonifierMidi(
+    filepath="data.mzML",
+    config=config
+)
+
+# Load and analyze data
+midi_sonifier.load_and_analyze_data(total_duration_seconds=60.0)
+
+# Setup musical system
+midi_sonifier.setup_musical_system(
+    scale="pentatonic_major",
+    root_note="G",
+    tempo=140,
+    meter=MusicMeter.FOUR_FOUR
+)
+
+# Detect peaks and generate MIDI
+midi_sonifier.detect_and_quantize_peaks(
+    intensity_threshold_percentile=85.0,
+    frequency_mapping='inverse_log'
+)
+
+# Export MIDI file
+midi_sonifier.generate_midi_file(
+    output_path="ms_music.mid",
+    track_name="Mass Spec Sonification",
+    instrument=1,  # Acoustic Piano
+    export_note_data=True
+)
+
+# Get analysis report
+report = midi_sonifier.get_analysis_report()
+print(f"Generated {report['note_count']} notes across {report['unique_pitches']} pitches")
+```
+
+### Visualization
+
+Create comprehensive visualizations:
+
+```python
+import ms_music.visualizations as viz
+
+# Generate different sonifications for comparison
+audio_results = {}
+methods = ['inverse_log', 'power_law', 'pentatonic_major']
+
+for method in methods:
+    if 'pentatonic' in method:
+        sonifier.sonify_quantized(
+            base_mapping='inverse_log',
+            method_params={'scale': method, 'root_note': 'G'}
+        )
+    else:
+        sonifier.sonify(
+            method='gradient',
+            method_params={'frequency_mapping': method}
+        )
+    audio_results[method] = sonifier.get_current_audio(copy=True)
+
+# Create visualizations
+sample_rate = sonifier.sample_rate
+
+# Waveform comparison
+fig = viz.plot_waveform_comparison(audio_results, sample_rate)
+
+# Spectrogram analysis
+fig = viz.plot_spectrogram_comparison(audio_results, sample_rate)
+
+# 3D spectrogram
+fig = viz.plot_3d_spectrogram(
+    audio_results['pentatonic_major'], 
+    sample_rate,
+    title="3D Spectrogram - Pentatonic Scale"
+)
+
+# Frequency mapping visualization
+fig = viz.plot_mz_to_frequency_mapping(
+    sonifier, 
+    mapping_types='all',
+    freq_range=(200, 4000)
+)
+
+# Comprehensive summary
+fig = viz.create_summary_grid(
+    sonifier, 
+    audio_results, 
+    sample_rate,
+    title="MS Music Analysis Summary"
+)
+```
+
+### FID Data Processing
+
+Process FID data:
+
+```python
+from ms_music.sonifier import FIDProcessor, add_fid_to_sonifier
+
+# Direct FID processing
+processor = FIDProcessor(sample_rate=44100)
+processor.read_fid("path/to/fid/file")
+processor.to_audio()
+processor.plot_fid()
+
+# Integrate with sonifier
+sonifier = MSSonifier("")
+sonifier.setup_musical_quantization()
+fid_sonifier = add_fid_to_sonifier(sonifier)
+audio = fid_sonifier.sonify_fid("path/to/fid/file")
+```
+
+## Examples
+
+A Jupyter notebook (`examples.ipynb`) demonstrates:
+
+- Loading and preprocessing MS data
+- All sonification methods and frequency mappings
+- Musical scale quantization including microtonal systems
+- Complete effects processing examples
+- MIDI generation workflows
+- Visualization techniques
+- FID data processing
+
+Run the notebook to explore the full capabilities!
 
 ## Contributing
-We'll figure details out later, for now, just have fun with the code! If you have ideas for improvements, bug fixes, or new features, feel free to open an issue or submit a pull request.
+
+We welcome contributions! Here's how to get involved:
+
+1. **Fork the repository** on GitHub
+2. **Create a feature branch** (`git checkout -b feature/new-feature`)
+3. **Make your changes** with appropriate tests
+4. **Commit your changes** (`git commit -m 'Add new feature'`)
+5. **Push to the branch** (`git push origin feature/new-feature`)
+6. **Open a Pull Request**
+
+### Areas for Contribution
+
+- New musical scales and tuning systems
+- Additional audio effects
+- Alternative sonification algorithms
+- Improved visualization techniques
+- Performance optimizations
+- Documentation improvements
 
 ## License
+
 This project is licensed under the MIT License - see the `LICENSE` file for details.
