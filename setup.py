@@ -18,7 +18,7 @@ install_requires = [
     # MIDI support
     'mido>=1.2.10',
 
-    # Enhanced visualizations
+    # Visualizations
     'seaborn>=0.11.0',
 ]
 
