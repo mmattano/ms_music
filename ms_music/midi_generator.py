@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, Tuple, Optional, Any
 from dataclasses import dataclass
+from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 import mido
 from mido import MidiFile, MidiTrack, Message, MetaMessage
@@ -65,42 +66,72 @@ class MidiConfig:
 
 
 class MSPeakDetector:
-    """Detect and extract peaks from MS data with timing information."""
+    """Peak detector with m/z clustering and deduplication."""
 
     def __init__(
         self,
         intensity_threshold_percentile: float = 90.0,
         min_peak_width_scans: int = 3,
         max_peaks_per_scan: int = 1000,
+        mz_tolerance_ppm: float = 20.0,
+        mz_tolerance_da: float = 0.01,
+        use_ppm_tolerance: bool = True,
+        consolidation_method: str = "weighted_average",
     ):
         """
-        Initialize peak detector.
+        Initialize peak detector with clustering.
 
         Args:
-            intensity_threshold_percentile: Minimum intensity percentile
-                    for peak detection
+            intensity_threshold_percentile: Minimum intensity percentile for
+            peak detection
             min_peak_width_scans: Minimum width in number of scans
             max_peaks_per_scan: Maximum peaks to extract per scan
+            mz_tolerance_ppm: m/z tolerance in parts per million for clustering
+            mz_tolerance_da: m/z tolerance in Daltons for clustering
+            use_ppm_tolerance: Whether to use ppm (True) or Da (False)
+            tolerance
+            consolidation_method: How to consolidate clustered peaks
+            ("weighted_average", "max_intensity", "median")
         """
         self.intensity_threshold_percentile = intensity_threshold_percentile
         self.min_peak_width_scans = min_peak_width_scans
         self.max_peaks_per_scan = max_peaks_per_scan
+        self.mz_tolerance_ppm = mz_tolerance_ppm
+        self.mz_tolerance_da = mz_tolerance_da
+        self.use_ppm_tolerance = use_ppm_tolerance
+        self.consolidation_method = consolidation_method
 
     def detect_peaks(
         self,
-        processed_spectra_dfs: List[pd.DataFrame],
-        max_intensity_overall: float,
-    ) -> List[Dict[str, Any]]:
+        processed_spectra_dfs,
+        max_intensity_overall,
+        apply_clustering=True,
+    ):
         """
-        Detect peaks across all scans with retention time information.
+        Detect peaks with optional m/z clustering.
 
         Args:
             processed_spectra_dfs: List of processed spectra DataFrames
             max_intensity_overall: Maximum intensity for normalization
+            apply_clustering: Whether to apply m/z clustering to remove
+            overlaps
 
         Returns:
-            List of peak dictionaries with timing and intensity info
+            List of peak dictionaries
         """
+        # Always start with raw peak detection
+        raw_peaks = self._detect_raw_peaks(
+            processed_spectra_dfs, max_intensity_overall)
+
+        if not apply_clustering or not raw_peaks:
+            return raw_peaks
+
+        # Apply clustering to reduce overlapping peaks
+        clustered_peaks = self._cluster_and_consolidate_peaks(raw_peaks)
+
+        return clustered_peaks
+
+    def _detect_raw_peaks(self, processed_spectra_dfs, max_intensity_overall):
         peaks = []
 
         # Calculate intensity threshold
@@ -117,13 +148,11 @@ class MSPeakDetector:
         )
 
         # Process each scan
-        for scan_idx, scan_df in enumerate(
-            tqdm(processed_spectra_dfs, desc="Detecting peaks")
-        ):
+        for scan_idx, scan_df in enumerate(processed_spectra_dfs):
             if scan_df.empty:
                 continue
 
-            # Calculate retention time (normalize across scans)
+            # Calculate retention time
             retention_time = (
                 scan_idx / len(processed_spectra_dfs)
                 if len(processed_spectra_dfs) > 1
@@ -132,13 +161,11 @@ class MSPeakDetector:
 
             # Get peaks above threshold
             above_threshold = scan_df[
-                scan_df["intensities"] >= intensity_threshold
-            ]
+                scan_df["intensities"] >= intensity_threshold]
 
             # Sort by intensity and take top peaks
             top_peaks = above_threshold.nlargest(
-                self.max_peaks_per_scan, "intensities"
-            )
+                self.max_peaks_per_scan, "intensities")
 
             # Convert to peak objects
             for mz_value, row in top_peaks.iterrows():
@@ -156,15 +183,111 @@ class MSPeakDetector:
                     ),
                 }
                 peaks.append(peak)
+
         return peaks
 
+    def _cluster_and_consolidate_peaks(self, raw_peaks):
+        if not raw_peaks:
+            return raw_peaks
+
+        # Extract m/z values for clustering
+        mz_values = np.array([peak["mz"] for peak in raw_peaks]).reshape(-1, 1)
+
+        # Calculate clustering tolerance
+        if self.use_ppm_tolerance:
+            avg_mz = np.mean(mz_values.flatten())
+            epsilon = avg_mz * self.mz_tolerance_ppm / 1e6
+        else:
+            epsilon = self.mz_tolerance_da
+
+        # Apply DBSCAN clustering
+        clustering = DBSCAN(eps=epsilon, min_samples=1)
+        cluster_labels = clustering.fit_predict(mz_values)
+
+        # Group peaks by cluster
+        peak_clusters = {}
+        for i, label in enumerate(cluster_labels):
+            if label not in peak_clusters:
+                peak_clusters[label] = []
+            peak_clusters[label].append(raw_peaks[i])
+
+        # Consolidate each cluster into a single representative peak
+        consolidated_peaks = []
+        for cluster_peaks in peak_clusters.values():
+            consolidated_peak = self._consolidate_peak_cluster(cluster_peaks)
+            consolidated_peaks.append(consolidated_peak)
+
+        return consolidated_peaks
+
+    def _consolidate_peak_cluster(self, cluster_peaks):
+        if len(cluster_peaks) == 1:
+            return cluster_peaks[0]
+
+        # Extract properties from all peaks in cluster
+        mz_values = [p["mz"] for p in cluster_peaks]
+        intensities = [p["intensity"] for p in cluster_peaks]
+        retention_times = [p["retention_time"] for p in cluster_peaks]
+        scan_indices = [p["scan_index"] for p in cluster_peaks]
+        peak_widths = [p.get("peak_width_scans", 1) for p in cluster_peaks]
+
+        # Consolidate based on method
+        if self.consolidation_method == "weighted_average":
+            # Weight by intensity
+            weights = np.array(intensities)
+            if np.sum(weights) > 0:
+                weights = weights / np.sum(weights)
+            else:
+                weights = np.ones(len(intensities)) / len(intensities)
+
+            consolidated_mz = np.average(mz_values, weights=weights)
+            consolidated_intensity = np.sum(intensities)  # Sum all intensities
+            consolidated_retention_time = np.average(
+                retention_times, weights=weights)
+
+        elif self.consolidation_method == "max_intensity":
+            # Use peak with maximum intensity as base
+            max_idx = np.argmax(intensities)
+            consolidated_mz = mz_values[max_idx]
+            consolidated_intensity = np.sum(intensities)
+            consolidated_retention_time = retention_times[max_idx]
+
+        elif self.consolidation_method == "median":
+            # Use median values
+            consolidated_mz = np.median(mz_values)
+            consolidated_intensity = np.sum(intensities)
+            consolidated_retention_time = np.median(retention_times)
+
+        else:
+            # Default to weighted average
+            weights = np.array(intensities)
+            if np.sum(weights) > 0:
+                weights = weights / np.sum(weights)
+            else:
+                weights = np.ones(len(intensities)) / len(intensities)
+            consolidated_mz = np.average(mz_values, weights=weights)
+            consolidated_intensity = np.sum(intensities)
+            consolidated_retention_time = np.average(
+                retention_times, weights=weights)
+
+        # Create consolidated peak
+        consolidated_peak = {
+            "mz": float(consolidated_mz),
+            "intensity": float(consolidated_intensity),
+            "normalized_intensity": float(
+                consolidated_intensity / max(intensities)),
+            "retention_time": float(consolidated_retention_time),
+            "scan_index": int(np.mean(scan_indices)),
+            "peak_width_scans": int(np.mean(peak_widths)),
+            "cluster_size": len(cluster_peaks),
+            "mz_range": (float(min(mz_values)), float(max(mz_values))),
+            "intensity_range": (
+                float(min(intensities)), float(max(intensities))),
+        }
+
+        return consolidated_peak
+
     def _estimate_peak_width(
-        self,
-        mz_value: float,
-        center_scan: int,
-        processed_spectra_dfs: List[pd.DataFrame],
-    ) -> int:
-        """Estimate peak width in number of scans."""
+            self, mz_value, center_scan, processed_spectra_dfs):
         width = 1
 
         # Look backward
@@ -179,9 +302,8 @@ class MSPeakDetector:
                 break
 
         # Look forward
-        for i in range(
-            center_scan + 1, min(len(processed_spectra_dfs), center_scan + 10)
-        ):
+        for i in range(center_scan + 1, min(len(
+            processed_spectra_dfs), center_scan + 10)):
             if (
                 i < len(processed_spectra_dfs)
                 and not processed_spectra_dfs[i].empty
@@ -202,23 +324,41 @@ class MSSonifierMidi:
     def __init__(
         self,
         filepath: str,
-        config: Optional[MidiConfig] = None,
+        config=None,
         sample_rate: int = 44100,
+        enable_mz_clustering: bool = False,
+        mz_tolerance_ppm: float = 20.0,
+        mz_tolerance_da: float = 0.01,
+        use_ppm_tolerance: bool = True,
+        mz_consolidation_method: str = "weighted_average",
     ):
         """
-        Initialize MIDI sonifier.
+        Initialize MIDI sonifier with optional peak clustering.
 
         Args:
             filepath: Path to mzML file
             config: MidiConfig object for configuration
             sample_rate: Audio sample rate for timing calculations
+            enable_mz_clustering: Whether to enable m/z peak clustering by
+            default
+            mz_tolerance_ppm: Parts per million tolerance for peak clustering
+            mz_tolerance_da: Absolute tolerance in Daltons for peak clustering
+            use_ppm_tolerance: Use ppm (True) or absolute (False) tolerance
+            mz_consolidation_method: How to consolidate clustered peaks
         """
         self.filepath = filepath
         self.config = config or MidiConfig()
         self.sample_rate = sample_rate
 
-        # Initialize components
-        self.peak_detector = MSPeakDetector()
+        # Initialize enhanced peak detector with clustering parameters
+        self.peak_detector = MSPeakDetector(
+            mz_tolerance_ppm=mz_tolerance_ppm,
+            mz_tolerance_da=mz_tolerance_da,
+            use_ppm_tolerance=use_ppm_tolerance,
+            consolidation_method=mz_consolidation_method,
+        )
+        self.enable_mz_clustering = enable_mz_clustering
+
         self.note_quantizer = None
         self.metrical_quantizer = None
 
@@ -231,6 +371,9 @@ class MSSonifierMidi:
         self.quantized_notes = []
 
         print(f"MSSonifierMidi initialized for: {filepath}")
+        if enable_mz_clustering:
+            tolerance_str = f"{mz_tolerance_ppm} ppm" if use_ppm_tolerance else f"{mz_tolerance_da} Da"
+            print(f"m/z peak clustering enabled: {tolerance_str} tolerance")
 
     def load_and_analyze_data(self, total_duration_seconds: float = 60.0):
         """
@@ -319,15 +462,31 @@ class MSSonifierMidi:
         intensity_threshold_percentile: float = 90.0,
         max_peaks_per_scan: int = 1000,
         frequency_mapping: str = "inverse_log",
+        apply_mz_clustering: bool = None,
+        mz_tolerance_ppm: float = None,
+        mz_tolerance_da: float = None,
+        use_ppm_tolerance: bool = None,
+        mz_consolidation_method: str = None,
+        apply_frequency_deduplication: bool = False,
+        frequency_tolerance_hz: float = 5.0,
     ):
         """
-        Detect peaks and quantize them to musical notes with timing.
+        Enhanced peak detection and quantization with optional m/z clustering.
 
         Args:
-            intensity_threshold_percentile: Minimum intensity
-                    percentile for peaks
+            intensity_threshold_percentile: Minimum intensity percentile for
+            peaks
             max_peaks_per_scan: Maximum peaks per scan to process
             frequency_mapping: Method for mapping m/z to frequency
+            apply_mz_clustering: Override instance setting for m/z clustering
+            mz_tolerance_ppm: Override ppm tolerance
+            mz_tolerance_da: Override absolute tolerance
+            use_ppm_tolerance: Override tolerance type
+            mz_consolidation_method: Override consolidation method
+            apply_frequency_deduplication: Apply frequency-based deduplication
+            after quantization
+            frequency_tolerance_hz: Frequency tolerance for post-quantization
+            deduplication
         """
         if not self.processed_spectra_dfs:
             raise ValueError("Must load data first")
@@ -335,25 +494,37 @@ class MSSonifierMidi:
         if not self.note_quantizer or not self.metrical_quantizer:
             raise ValueError("Must setup musical system first")
 
-        # Configure peak detector
-        self.peak_detector = MSPeakDetector(
-            intensity_threshold_percentile=intensity_threshold_percentile,
-            max_peaks_per_scan=max_peaks_per_scan,
+        # Configure peak detector with current or override parameters
+        self.peak_detector.intensity_threshold_percentile = \
+            intensity_threshold_percentile
+        self.peak_detector.max_peaks_per_scan = max_peaks_per_scan
+
+        # Use override parameters or instance defaults
+        if mz_tolerance_ppm is not None:
+            self.peak_detector.mz_tolerance_ppm = mz_tolerance_ppm
+        if mz_tolerance_da is not None:
+            self.peak_detector.mz_tolerance_da = mz_tolerance_da
+        if use_ppm_tolerance is not None:
+            self.peak_detector.use_ppm_tolerance = use_ppm_tolerance
+        if mz_consolidation_method is not None:
+            self.peak_detector.consolidation_method = mz_consolidation_method
+
+        # Determine whether to apply clustering
+        should_cluster = (
+            apply_mz_clustering
+            if apply_mz_clustering is not None
+            else self.enable_mz_clustering
         )
 
-        # Detect peaks
+        # Detect peaks with optional clustering
         self.detected_peaks = self.peak_detector.detect_peaks(
-            self.processed_spectra_dfs, self.max_intensity_overall
+            self.processed_spectra_dfs,
+            self.max_intensity_overall,
+            apply_clustering=should_cluster
         )
-
-        if not self.detected_peaks:
-            print("Warning: No peaks detected for MIDI generation")
-            return
 
         # Convert peaks to quantized musical notes
         self.quantized_notes = []
-
-        # Calculate total duration in MIDI ticks
         total_ticks = int(
             self.total_duration_seconds
             * (self.metrical_quantizer.tempo / 60.0)
@@ -408,8 +579,77 @@ class MSSonifierMidi:
 
             self.quantized_notes.append(midi_note)
 
+        # Apply frequency-based deduplication if requested
+        if apply_frequency_deduplication and self.quantized_notes:
+            original_count = len(self.quantized_notes)
+            self.quantized_notes = self._deduplicate_by_frequency(
+                self.quantized_notes, frequency_tolerance_hz
+            )
+            print(f"Frequency deduplication: {original_count} "
+                  f"-> {len(self.quantized_notes)} notes")
+
         # Sort notes by start time
         self.quantized_notes.sort(key=lambda n: n.start_time)
+
+    def _deduplicate_by_frequency(self, notes, frequency_tolerance_hz=5.0):
+        """
+        Remove notes with very similar frequencies after quantization.
+
+        Args:
+            notes: List of MidiNote objects
+            frequency_tolerance_hz: Frequency tolerance in Hz
+
+        Returns:
+            Deduplicated list of notes
+        """
+        if not notes:
+            return notes
+
+        # Sort by frequency
+        sorted_notes = sorted(notes, key=lambda n: n.frequency)
+
+        deduplicated_notes = []
+        current_group = [sorted_notes[0]]
+
+        for note in sorted_notes[1:]:
+            current_freq = note.frequency
+            group_freq = current_group[0].frequency
+
+            if abs(current_freq - group_freq) <= frequency_tolerance_hz:
+                # Add to current group
+                current_group.append(note)
+            else:
+                # Process current group and start new group
+                consolidated_note = self._consolidate_note_group(current_group)
+                deduplicated_notes.append(consolidated_note)
+                current_group = [note]
+
+        # Don't forget the last group
+        if current_group:
+            consolidated_note = self._consolidate_note_group(current_group)
+            deduplicated_notes.append(consolidated_note)
+
+        return deduplicated_notes
+
+    def _consolidate_note_group(self, note_group):
+        """Consolidate a group of similar frequency notes into one."""
+        if len(note_group) == 1:
+            return note_group[0]
+
+        # Use note with highest velocity as base
+        base_note = max(note_group, key=lambda n: n.velocity)
+
+        # Combine properties from all notes in group
+        total_velocity = min(127, sum(n.velocity for n in note_group))
+        avg_duration = int(np.mean([n.duration for n in note_group]))
+        total_intensity = sum(n.original_intensity for n in note_group)
+
+        # Update the base note
+        base_note.velocity = total_velocity
+        base_note.duration = avg_duration
+        base_note.original_intensity = total_intensity
+
+        return base_note
 
     def _map_mz_to_frequency(
         self, mz_value: float, mapping_method: str,
