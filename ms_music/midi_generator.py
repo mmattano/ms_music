@@ -101,7 +101,7 @@ class MSPeakDetector:
         self.use_ppm_tolerance = use_ppm_tolerance
         self.consolidation_method = consolidation_method
 
-    def detect_peaks(
+    def _detect_peaks(
         self,
         processed_spectra_dfs,
         max_intensity_overall,
@@ -303,7 +303,7 @@ class MSPeakDetector:
 
         # Look forward
         for i in range(center_scan + 1, min(len(
-            processed_spectra_dfs), center_scan + 10)):
+                processed_spectra_dfs), center_scan + 10)):
             if (
                 i < len(processed_spectra_dfs)
                 and not processed_spectra_dfs[i].empty
@@ -372,7 +372,10 @@ class MSSonifierMidi:
 
         print(f"MSSonifierMidi initialized for: {filepath}")
         if enable_mz_clustering:
-            tolerance_str = f"{mz_tolerance_ppm} ppm" if use_ppm_tolerance else f"{mz_tolerance_da} Da"
+            tolerance_str = (
+                f"{mz_tolerance_ppm} ppm"
+                if use_ppm_tolerance else f"{mz_tolerance_da} Da"
+            )
             print(f"m/z peak clustering enabled: {tolerance_str} tolerance")
 
     def load_and_analyze_data(self, total_duration_seconds: float = 60.0):
@@ -517,11 +520,20 @@ class MSSonifierMidi:
         )
 
         # Detect peaks with optional clustering
-        self.detected_peaks = self.peak_detector.detect_peaks(
+        self.detected_peaks = self.peak_detector._detect_peaks(
             self.processed_spectra_dfs,
             self.max_intensity_overall,
             apply_clustering=should_cluster
         )
+
+        # Calculate velocity normalization range from detected peaks only
+        peak_intensities = [peak["intensity"] for peak in self.detected_peaks]
+        if peak_intensities:
+            min_peak_intensity = min(peak_intensities)
+            max_peak_intensity = max(peak_intensities)
+            peak_intensity_range = (
+                max_peak_intensity - min_peak_intensity
+                if max_peak_intensity > min_peak_intensity else 1.0)
 
         # Convert peaks to quantized musical notes
         self.quantized_notes = []
@@ -567,7 +579,13 @@ class MSSonifierMidi:
                     np.clip(note_info.get("midi_note", 60), 0, 127)
                 ),
                 velocity=int(
-                    np.clip(peak["normalized_intensity"] * 100 + 20, 20, 127)
+                    np.clip(
+                        20 + (
+                            (
+                                peak["intensity"] - min_peak_intensity
+                                ) / peak_intensity_range
+                        ) * 107, 20, 127)
+                    if peak_intensities and peak_intensity_range > 0 else 64
                 ),
                 channel=0,
                 original_mz=peak["mz"],
