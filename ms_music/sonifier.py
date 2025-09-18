@@ -2,7 +2,6 @@ import numpy as np
 from tqdm import tqdm
 import os
 import math
-import matplotlib.pyplot as plt
 from scipy import signal
 import random
 
@@ -878,69 +877,53 @@ class MSSonifier:
 
         return freq_range[0] + mz_normalized * (freq_range[1] - freq_range[0])
 
+    def load_fid_data(
+        self,
+        fid_filepath: str,
+        conversion_factor: float = 4092.0,
+    ):
+        """
+        Load FID data directly as audio, making it compatible with all
+        sonifier methods.
 
-# So this really should be rewritten and integrated into the MSSonifier, I was
-# just lazy and didn't do it
-class FIDProcessor:
-    """Process FID data from binary files, convert to audio"""
+        Args:
+            fid_filepath: Path to FID binary file
+            conversion_factor: Conversion factor for FID data
 
-    def __init__(self, sample_rate: int = 44100):
-        self.sample_rate = sample_rate
-        self.fid_data = None
-        self.audio_data = None
+        Returns:
+            np.ndarray: Processed audio data
+        """
+        with open(fid_filepath, "rb") as f:
+            data = np.fromfile(f, dtype="<i4")
 
-    def read_fid(self, filepath: str, max_points: int = 2**20) -> np.ndarray:
-        """Read FID binary file"""
-        with open(filepath, "rb") as f:
-            # Read as little-endian 32-bit integers
-            data = np.fromfile(f, dtype="<i4", count=max_points)
-        self.fid_data = data.astype(np.float32)
-        return self.fid_data
+        fid_data = data.astype(np.float32)
 
-    def plot_fid(self, title: str = "FID Data"):
-        """Plot FID data"""
-        if self.fid_data is None:
-            return
-        plt.figure(figsize=(12, 4))
-        plt.plot(self.fid_data, linewidth=0.5)
-        plt.title(title)
-        plt.xlabel("Sample")
-        plt.ylabel("Amplitude")
-        plt.show()
-
-    def to_audio(self, original_rate: float = 4092.0) -> np.ndarray:
-        """Convert FID to audio format."""
-        if self.fid_data is None:
-            return None
-
-        # Resample to target rate
-        if original_rate != self.sample_rate:
+        # Resample to target rate if needed
+        if conversion_factor != self.sample_rate:
             new_length = int(
-                len(self.fid_data) * self.sample_rate / original_rate
-            )
-            self.audio_data = signal.resample(self.fid_data, new_length)
+                len(fid_data) * self.sample_rate / conversion_factor)
+            resampled_data = signal.resample(fid_data, new_length)
         else:
-            self.audio_data = self.fid_data.copy()
+            resampled_data = fid_data.copy()
+
+        # Adjust to target duration
+        target_samples = int(self.total_duration_seconds * self.sample_rate)
+        if len(resampled_data) > target_samples:
+            # Truncate if too long
+            self.current_audio_data = resampled_data[:target_samples]
+        elif len(resampled_data) < target_samples:
+            # Pad with zeros if too short
+            self.current_audio_data = np.pad(
+                resampled_data,
+                (0, target_samples - len(resampled_data)),
+                'constant'
+                )
+        else:
+            self.current_audio_data = resampled_data
 
         # Normalize
-        if np.max(np.abs(self.audio_data)) > 0:
-            self.audio_data = self.audio_data / np.max(np.abs(self.audio_data))
+        max_val = np.max(np.abs(self.current_audio_data))
+        if max_val > 0:
+            self.current_audio_data = self.current_audio_data / max_val
 
-        return self.audio_data
-
-
-# Add to existing sonifier
-def add_fid_to_sonifier(sonifier_instance):
-    """Add FID processing to existing MSSonifier."""
-
-    def sonify_fid(fid_path: str, quantize: bool = False):
-        processor = FIDProcessor(sample_rate=sonifier_instance.sample_rate)
-        processor.read_fid(fid_path)
-        processor.to_audio()
-        sonifier_instance.current_audio_data = processor.audio_data
-
-        return sonifier_instance.current_audio_data
-
-    # Add method to sonifier
-    sonifier_instance.sonify_fid = sonify_fid
-    return sonifier_instance
+        return self.current_audio_data
