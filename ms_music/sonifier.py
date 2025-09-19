@@ -4,6 +4,7 @@ import os
 import math
 from scipy import signal
 import random
+import librosa
 
 from . import io
 from . import effects as audio_effects
@@ -880,7 +881,8 @@ class MSSonifier:
     def load_fid_data(
         self,
         fid_filepath: str,
-        conversion_factor: float = 4092.0,
+        original_sample_rate: float = 10e6,  # 10 MHz default
+        conversion_factor: float = 2**12,    # 4096 default
     ):
         """
         Load FID data directly as audio, making it compatible with all
@@ -888,7 +890,10 @@ class MSSonifier:
 
         Args:
             fid_filepath: Path to FID binary file
-            conversion_factor: Conversion factor for FID data
+            original_sample_rate: Original FID acquisition rate in Hz
+                (default: 10 MHz)
+            conversion_factor: Factor to downsample the original rate
+                (default: 2^12 = 4096)
 
         Returns:
             np.ndarray: Processed audio data
@@ -898,28 +903,24 @@ class MSSonifier:
 
         fid_data = data.astype(np.float32)
 
-        # Resample to target rate if needed
-        if conversion_factor != self.sample_rate:
+        # Calculate effective sample rate after conversion
+        effective_sample_rate = original_sample_rate / conversion_factor
+
+        # Resample from effective rate to target rate if needed
+        if effective_sample_rate != self.sample_rate:
             new_length = int(
-                len(fid_data) * self.sample_rate / conversion_factor)
+                len(fid_data) * self.sample_rate / effective_sample_rate)
             resampled_data = signal.resample(fid_data, new_length)
         else:
             resampled_data = fid_data.copy()
 
-        # Adjust to target duration
-        target_samples = int(self.total_duration_seconds * self.sample_rate)
-        if len(resampled_data) > target_samples:
-            # Truncate if too long
-            self.current_audio_data = resampled_data[:target_samples]
-        elif len(resampled_data) < target_samples:
-            # Pad with zeros if too short
-            self.current_audio_data = np.pad(
-                resampled_data,
-                (0, target_samples - len(resampled_data)),
-                'constant'
-                )
-        else:
-            self.current_audio_data = resampled_data
+        # Time-stretch to exact target duration while preserving pitch
+        current_duration = len(resampled_data) / self.sample_rate
+        time_stretch_rate = current_duration / self.total_duration_seconds
+
+        # Use librosa's pitch-preserving time stretch
+        self.current_audio_data = librosa.effects.time_stretch(
+            resampled_data, rate=time_stretch_rate)
 
         # Normalize
         max_val = np.max(np.abs(self.current_audio_data))
