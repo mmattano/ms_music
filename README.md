@@ -9,17 +9,19 @@
 1. [Features](#features)
 2. [Installation](#installation)
 3. [Quick Start](#quick-start)
-4. [Detailed Usage](#detailed-usage)
+4. [Graphical interface](#graphical-interface)
+5. [Detailed Usage](#detailed-usage)
    * [Basic Sonification](#basic-sonification)
    * [Musical Quantization](#musical-quantization)
+   * [Rhythm & Meter](#rhythm--meter)
    * [Frequency Mappings](#frequency-mappings)
    * [Audio Effects Processing](#audio-effects-processing)
    * [MIDI Generation](#midi-generation)
    * [Visualization](#visualization)
    * [FID Data Processing](#fid-data-processing)
-5. [Examples](#examples)
-6. [Contributing](#contributing)
-7. [License](#license)
+6. [Examples](#examples)
+7. [Contributing](#contributing)
+8. [License](#license)
 
 ## Features
 
@@ -29,6 +31,7 @@
   - **Gradient Method**: Continuous sine wave synthesis with smooth intensity transitions
   - **ADSR Method**: Event-based synthesis with customizable envelope shaping
 * **Multiple Frequency Mappings**: `inverse_log`, `power_law`, `musical_octaves`, `chromatic`, `linear`
+* **One `sonify()` for everything**: every method, mapping, scale, tuning and rhythm option combines freely
 
 ### Musical Methods
 * **Musical Scale Quantization**: Transform raw frequencies into musical scales
@@ -37,7 +40,7 @@
   - Just intonation with pure frequency ratios
   - Traditional non-Western scales: Arabic maqam, Turkish makam, Indian raga approximations
 * **Advanced Tuning Systems**: Support for equal temperament, just intonation, and custom tuning
-* **Metrical Quantization**: Align timing to musical meters (4/4, 3/4, 6/8, 5/4, 7/8, etc.)
+* **Rhythm & Meter**: Play audio in time: regroup scans onto a beat grid in any meter (4/4, 3/4, 6/8, 5/4, 7/8, …) with tempo, swing, accents and articulation; MIDI export uses the same meters
 
 ### Audio Effects
 * **Filters**: Lowpass, highpass, bandpass, notch, parametric EQ, graphic EQ
@@ -82,10 +85,15 @@
 
 2. **Dependencies** (automatically installed):
    - Core: `numpy`, `pandas`, `scipy`, `matplotlib`, `tqdm`
-   - MS data: `matchms>=0.25.0`
+   - MS data: `pymzml>=2.5.0`
    - Audio: `librosa>=0.9.0`
-   - MIDI: `mido>=1.2.10`
+   - MIDI: `mido>=1.2.10`, `scikit-learn>=1.0.0` (peak clustering)
    - Visualization: `seaborn>=0.11.0`
+   - GUI: `nicegui>=2.0`
+
+   > **External tools:** video/animation export requires [`ffmpeg`](https://ffmpeg.org/)
+   > to be installed and available on your `PATH`. Audio, MIDI, and static plots do
+   > not need it.
 
 ## Quick Start
 
@@ -109,14 +117,12 @@ sonifier = MSSonifier(
 # Load and process data
 sonifier.load_and_preprocess_data()
 
-# Create musical sonification
-sonifier.sonify_quantized(
-    base_mapping='inverse_log',
-    method_params={
-        'scale': 'pentatonic_major',
-        'root_note': 'C',
-        'freq_range': (200, 2000)
-    }
+# Create musical sonification: pitches snapped to C pentatonic major
+sonifier.sonify(
+    frequency_mapping='inverse_log',
+    freq_range=(200, 2000),
+    scale='pentatonic_major',
+    root_note='C',
 )
 
 # Apply professional effects
@@ -127,6 +133,50 @@ sonifier.apply_effect('compressor', {'threshold_db': -15, 'ratio': 3})
 sonifier.save_audio(os.path.join(output_dir, "ms_music.wav"))
 print("Musical sonification complete!")
 ```
+
+## Graphical interface
+
+Prefer clicking to coding? `ms_music` ships with a GUI that exposes the full
+audio/MIDI/visualization workflow without writing any Python. It runs locally
+and opens in your web browser (built with [NiceGUI](https://nicegui.io)).
+
+The GUI is included in the standard install — just launch it:
+
+```bash
+ms-music-gui
+```
+
+(or `python -m ms_music.gui`). Useful options:
+
+* `--native` – open in a desktop window instead of a browser tab (needs `pip install pywebview`).
+* `--port 8765` – serve on a specific port; `--no-browser` – don't open a tab automatically.
+
+The app runs entirely on your machine: files are read from disk by path (via
+the built-in file browser), so even multi-GB `.mzML` files are never uploaded.
+
+Pages in the sidebar follow the normal workflow:
+
+* **Data** – open an `.mzML`, raw FID, or `.wav` file and set duration / sample rate.
+* **Sonify** – one page for every option of `sonify()`: gradient or ADSR synthesis, any
+  frequency mapping, optional snapping to a scale (12-TET, EDO, just intonation), optional
+  rhythm (meter, tempo, grid, swing, accents), and MS2 precursor tones.
+* **Effects** – browse every audio effect, tweak its parameters, and chain them with undo / reset.
+* **MIDI** – configure scale, tempo, meter, and peak detection, then download a `.mid` file
+  (multi-file voice exports come as a `.zip`).
+* **Visualize** – audio plots (spectrograms, 3D views, MFCCs, chromagrams, envelopes), MS-data
+  plots (m/z → frequency mapping, scan progression, summary grid) and comparisons between kept
+  versions (spectrograms, spectra, difference spectrogram, similarity matrices, feature
+  heatmap). Every plot's options are editable; download as PNG.
+* **Video** – render any of the video types (playback, animated views, 3D waterfalls and
+  build-ups, 3D scan/heatmap views, side-by-side comparisons) with a progress bar, time
+  estimate and Cancel; preview in the page and download as MP4. Needs `ffmpeg`.
+
+A player bar at the bottom always shows the current audio's waveform (with bar lines when it
+is metered), lets you play and seek it in the browser, lists the applied effect chain, and
+downloads the result as WAV. Its bookmark button **keeps the current audio as a named
+version** for the comparison plots and videos. Long-running steps run in the background, so
+the interface stays responsive; a spinner in the header shows when work is in progress, and
+the log (header button) records every step.
 
 ## Detailed Use
 
@@ -146,52 +196,46 @@ sonifier = MSSonifier(
 # Load data
 sonifier.load_and_preprocess_data()
 
-# Basic sonification with different frequency mappings
+# Basic sonification (continuous tones following each m/z's intensity)
 sonifier.sonify(
     method='gradient',
-    method_params={
-        'frequency_mapping': 'inverse_log',  # or 'power_law', 'musical_octaves', 'chromatic', 'linear'
-        'freq_range': (200, 4000),
-        'overlap_percentage': 0.05
-    }
+    frequency_mapping='inverse_log',  # or 'power_law', 'musical_octaves', 'chromatic', 'linear'
+    freq_range=(200, 4000),
 )
 
-# ADSR method for more rhythmic results
+# ADSR method: each scan becomes a note.
+# Envelope stages are expressed as percentages of each note's duration
+# (attack/decay/release) and a sustain level (0-1). Set randomize=False
+# to use these fixed values instead of randomized envelopes.
 sonifier.sonify(
     method='adsr',
-    method_params={
-        'frequency_mapping': 'musical_octaves',
-        'adsr_settings': {
-            'attack': 0.01,
-            'decay': 0.1,
-            'sustain': 0.7,
-            'release': 0.2
-        }
-    }
+    frequency_mapping='musical_octaves',
+    adsr_settings={
+        'randomize': False,
+        'attack_time_pc': 0.1,
+        'decay_time_pc': 0.1,
+        'sustain_level_pc': 0.7,
+        'release_time_pc': 0.2,
+    },
 )
 ```
 
+`sonify()` is the single entry point: the synthesis method, frequency
+mapping, scale/tuning and rhythm options below all combine with each other.
+
 ### Musical Quantization
 
-Transform raw frequencies into proper musical scales:
+Snap pitches to a musical scale by passing `scale` to `sonify()`. This
+works with both methods and every frequency mapping:
 
 ```python
-# Setup musical quantization
-sonifier.setup_musical_quantization(
-    scale="major",          # or "minor", "pentatonic_major", "blues", etc.
-    root_note="C",          # Root note of the scale
-    tuning_freq=440.0,      # A4 frequency
-    freq_range=(200, 3000)
-)
-
-# Sonify with quantization
-sonifier.sonify_quantized(
-    base_mapping='inverse_log',
-    method_params={
-        'scale': 'dorian',
-        'root_note': 'D',
-        'use_log_distance': True
-    }
+sonifier.sonify(
+    frequency_mapping='inverse_log',
+    freq_range=(200, 3000),
+    scale='dorian',          # or 'major', 'minor', 'pentatonic_major', 'blues', ...
+    root_note='D',
+    tuning_freq=440.0,       # A4 frequency
+    use_log_distance=True,   # nearest note in perceptual (log) pitch
 )
 
 # Explore microtonal scales
@@ -200,14 +244,56 @@ from ms_music.musical_quantization import MusicalNoteQuantizer
 # List available scales
 MusicalNoteQuantizer.list_available_scales()
 
-# Use 19-tone equal temperament
-sonifier.sonify_quantized(
-    base_mapping='power_law',
-    method_params={
-        'scale': '19_edo_diatonic',
-        'root_note': 'C'
-    }
+# 19-tone equal temperament
+sonifier.sonify(
+    frequency_mapping='power_law',
+    scale='19_edo_diatonic',
+    root_note='C',
+    edo_divisions=19,
 )
+
+# Just intonation, with ADSR notes
+sonifier.sonify(
+    method='adsr',
+    scale='just_major',
+    root_note='D',
+    use_just_intonation=True,
+)
+```
+
+### Rhythm & Meter
+
+By default every scan gets an equal slice of time. Pass `rhythm` to play the
+data in time instead: scans are regrouped onto the steps of a beat grid and
+the total length snaps to whole bars. Each pitch then plays as notes that
+follow its signal, like the MIDI export: a note starts on the grid step where
+the pitch's intensity appears and lasts for as many steps as the signal stays
+above `note_threshold` (a fraction of that pitch's peak). A long
+chromatographic peak is one long note. Notes starting on the downbeat are
+accented. Tempo is in quarter-note BPM, as in MIDI export.
+
+```python
+from ms_music import RhythmConfig
+
+sonifier.sonify(
+    method='adsr',
+    scale='pentatonic_minor', root_note='A',
+    rhythm={
+        'meter': '3/4',        # any MusicMeter: '4/4', '6/8', '5/4', '7/8', ...
+        'tempo': 96,           # quarter-note BPM
+        'subdivision': 16,     # grid step: 4, 8, 16 or 32
+        'mode': 'swing',       # 'strict_grid', 'swing' or 'humanized'
+        'swing_ratio': 0.67,
+        'note_threshold': 0.05,  # a note lasts while intensity > 5% of its peak
+        'accent': 0.4,         # extra gain for notes starting on beat 1
+        'gate': 0.9,           # a note's last step sounds 90% (gap before next)
+        'aggregate': 'max',    # how scans inside one step combine
+    },
+)
+print(sonifier.rhythm_grid.describe())   # e.g. "3/4 · 96 BPM · 16 bars"
+
+# A RhythmConfig works too and is validated up front
+sonifier.sonify(rhythm=RhythmConfig(meter='7/8', tempo=140, subdivision=8))
 ```
 
 ### Frequency Mappings
@@ -217,13 +303,7 @@ sonifier.sonify_quantized(
 mappings = ['inverse_log', 'power_law', 'musical_octaves', 'chromatic', 'linear']
 
 for mapping in mappings:
-    sonifier.sonify(
-        method='gradient',
-        method_params={
-            'frequency_mapping': mapping,
-            'freq_range': (200, 4000)
-        }
-    )
+    sonifier.sonify(frequency_mapping=mapping, freq_range=(200, 4000))
     sonifier.save_audio(f"ms_sound_{mapping}.wav")
 ```
 
@@ -350,15 +430,9 @@ methods = ['inverse_log', 'power_law', 'pentatonic_major']
 
 for method in methods:
     if 'pentatonic' in method:
-        sonifier.sonify_quantized(
-            base_mapping='inverse_log',
-            method_params={'scale': method, 'root_note': 'G'}
-        )
+        sonifier.sonify(scale=method, root_note='G')
     else:
-        sonifier.sonify(
-            method='gradient',
-            method_params={'frequency_mapping': method}
-        )
+        sonifier.sonify(frequency_mapping=method)
     audio_results[method] = sonifier.get_current_audio(copy=True)
 
 # Create visualizations
@@ -395,22 +469,30 @@ fig = viz.create_summary_grid(
 
 ### FID Data Processing
 
-Process FID data:
+An `MSSonifier` can sonify a raw FID (free induction decay) file directly,
+bypassing the mzML pipeline. The FID is read as little-endian `int32`,
+resampled to the target sample rate, and time-stretched to the requested
+duration; you can then apply effects and save it like any other audio
+buffer. (Scale and rhythm options apply to spectra, so they are not used
+for FID input.)
 
 ```python
-from ms_music.sonifier import FIDProcessor, add_fid_to_sonifier
+from ms_music import MSSonifier
 
-# Direct FID processing
-processor = FIDProcessor(sample_rate=44100)
-processor.read_fid("path/to/fid/file")
-processor.to_audio()
-processor.plot_fid()
+# filepath is unused for FID input, so pass an empty string
+fid_sonifier = MSSonifier(filepath="", total_duration_minutes=0.5, sample_rate=44100)
 
-# Integrate with sonifier
-sonifier = MSSonifier("")
-sonifier.setup_musical_quantization()
-fid_sonifier = add_fid_to_sonifier(sonifier)
-audio = fid_sonifier.sonify_fid("path/to/fid/file")
+# Read and convert the raw FID
+fid_sonifier.load_fid_data(
+    "path/to/fid/file",
+    original_sample_rate=10e6,   # acquisition rate of the instrument (Hz)
+    conversion_factor=2 ** 12,   # scaling applied to the raw int32 samples
+)
+
+# Apply effects like any other audio buffer
+fid_sonifier.apply_effect("reverb", {"reverb_time_s": 2.0})
+
+fid_sonifier.save_audio("fid_processed.wav")
 ```
 
 ## Examples

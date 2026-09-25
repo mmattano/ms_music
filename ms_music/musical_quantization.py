@@ -36,6 +36,39 @@ class QuantizationMode(Enum):
     ADAPTIVE = "adaptive"  # Adapt grid to data characteristics
 
 
+def _coerce_meter(value: str) -> MusicMeter:
+    """Coerce a string to a MusicMeter.
+
+    Accepts enum member names (``"THREE_FOUR"``) and musical notation
+    (``"3/4"``). Raises ValueError on anything unrecognized rather than
+    silently defaulting.
+    """
+    key = value.strip().upper().replace("/", "_")
+    if hasattr(MusicMeter, key):
+        return MusicMeter[key]
+    if "/" in value:
+        try:
+            beats, note_value = (int(part) for part in value.split("/"))
+            return MusicMeter((beats, note_value))
+        except (ValueError, KeyError):
+            pass
+    raise ValueError(
+        f"Unknown meter {value!r}. Use notation like '3/4' or a member "
+        f"name like 'THREE_FOUR'."
+    )
+
+
+def _coerce_quant_mode(value: str) -> QuantizationMode:
+    """Coerce a string to a QuantizationMode, raising on unknown values."""
+    key = value.strip().upper()
+    if hasattr(QuantizationMode, key):
+        return QuantizationMode[key]
+    raise ValueError(
+        f"Unknown quantization mode {value!r}. Expected one of: "
+        f"{', '.join(m.name for m in QuantizationMode)}."
+    )
+
+
 @dataclass
 class NoteLength:
     """Represents musical note lengths in terms of beats."""
@@ -109,8 +142,11 @@ class MetricalQuantizer:
         # Calculate measure length in ticks
         self.ticks_per_measure = self.ticks_per_beat * meter.beats_per_measure
 
-        # Define available note lengths
+        # Define available note lengths (short → long so quantize_duration
+        # can also handle wide chromatographic peaks spanning many bars)
         self.note_lengths = [
+            NoteLength("4-bar",   16.0, ticks_per_beat),
+            NoteLength("2-bar",    8.0, ticks_per_beat),
             NoteLength.whole_note(ticks_per_beat),
             NoteLength.half_note(ticks_per_beat),
             NoteLength.dotted_quarter(ticks_per_beat),
@@ -231,21 +267,28 @@ class MetricalQuantizer:
         Returns:
             Quantized duration in ticks
         """
+        max_note_beats = max(nl.beats for nl in self.note_lengths)
+
         if peak_width_seconds is not None and peak_width_seconds > 0:
-            # Convert peak width directly to beats
             seconds_per_beat = 60.0 / self.tempo
             peak_beats = peak_width_seconds / seconds_per_beat
 
-            # Find closest musical note length
+            # If the peak is wider than the largest standard length, use the
+            # raw beat count converted to ticks so long chromatographic peaks
+            # are not artificially shortened.
+            if peak_beats > max_note_beats:
+                return max(1, int(round(peak_beats * self.ticks_per_beat)))
+
             closest_length = min(
                 self.note_lengths, key=lambda x: abs(x.beats - peak_beats)
             )
-
             return max(1, int(round(closest_length.ticks)))
 
         # Fallback: use original duration_ticks if no peak width
         if duration_ticks > 0:
             duration_beats = duration_ticks / self.ticks_per_beat
+            if duration_beats > max_note_beats:
+                return max(1, duration_ticks)
             closest_length = min(
                 self.note_lengths, key=lambda x: abs(x.beats - duration_beats)
             )
@@ -783,6 +826,37 @@ class MusicalNoteQuantizer:
                 closest_note = note_info.copy()
                 closest_note["original_frequency"] = frequency
                 closest_note["log_distance"] = distance
+
+        return closest_note
+
+    def quantize_frequency(self, frequency):
+        """Find the closest musical note using linear frequency distance.
+
+        Mirrors :meth:`quantize_frequency_log` but measures nearness in
+        linear (Hz) space instead of logarithmic space. Used when the
+        caller requests ``use_log_distance=False``.
+        """
+        if not self.note_frequencies:
+            return {
+                "frequency": frequency,
+                "note": "N/A",
+                "octave": 0,
+                "midi_note": 60,
+            }
+
+        if frequency <= 0:
+            return self.note_frequencies[0]
+
+        min_distance = float("inf")
+        closest_note = None
+
+        for note_info in self.note_frequencies:
+            distance = abs(note_info["frequency"] - frequency)
+            if distance < min_distance:
+                min_distance = distance
+                closest_note = note_info.copy()
+                closest_note["original_frequency"] = frequency
+                closest_note["linear_distance"] = distance
 
         return closest_note
 

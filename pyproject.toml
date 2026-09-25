@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ms_music"
+version = "0.2.0"
+description = "A Python package to generate audio and MIDI from mass spectrometry data with ion mobility support."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Matthias Anagho-Mattanovich", email = "matthias.mattanovich@sund.ku.dk" },
+]
+keywords = [
+    "mass-spectrometry",
+    "sonification",
+    "audio",
+    "midi",
+    "bioinformatics",
+    "data-visualization",
+    "microtonal",
+    "music-theory",
+    "equal-temperament",
+    "ion-mobility",
+    "just-intonation",
+    "experimental-music",
+    "scientific-data",
+    "quantization",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Sound/Audio :: Sound Synthesis",
+    "Topic :: Multimedia :: Sound/Audio :: MIDI",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+    "Topic :: Artistic Software",
+]
+dependencies = [
+    "numpy>=1.20.0",
+    "pandas>=1.3.0",
+    "scipy>=1.7.0",
+    "matplotlib>=3.3.0",
+    "tqdm>=4.60.0",
+    "pymzml>=2.5.0",
+    "librosa>=0.9.0",
+    "mido>=1.2.10",
+    "seaborn>=0.11.0",
+    "scikit-learn>=1.0.0",
+    "nicegui>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "build>=0.10", "twine>=4.0"]
+
+[project.scripts]
+ms-music-gui = "ms_music.gui:main"
+
+[project.urls]
+Homepage = "https://github.com/mmattano/ms_music"
+"Bug Reports" = "https://github.com/mmattano/ms_music/issues"
+Source = "https://github.com/mmattano/ms_music"
+Examples = "https://github.com/mmattano/ms_music/tree/main/examples"
+
+[tool.setuptools]
+packages = ["ms_music", "ms_music.gui"]
+zip-safe = false

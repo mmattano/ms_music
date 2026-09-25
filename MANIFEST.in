@@ -1,0 +1,9 @@
+include README.md
+include LICENSE
+
+# Keep build artifacts and dev/junk out of the sdist
+prune examples
+recursive-exclude . *.DS_Store
+recursive-exclude . .Rhistory
+global-exclude *.py[cod]
+global-exclude __pycache__

@@ -6,7 +6,15 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import seaborn as sns
 from scipy.stats import pearsonr
+from scipy.ndimage import gaussian_filter
 from typing import Tuple, Dict, Any
+from matplotlib.animation import FuncAnimation, FFMpegWriter
+from typing import Callable, Optional
+import subprocess
+import tempfile
+import os
+from matplotlib.colors import ListedColormap
+
 
 
 def extract_audio_features(audio_data, sr):
@@ -616,23 +624,27 @@ def plot_mz_to_frequency_mapping(
     if not sonifier or not sonifier.processed_spectra_dfs:
         return None
 
-    # Define all available mappings
+    # Built-in mappings go through the same dispatcher sonify() uses, so the
+    # curves match the audio exactly.
+    def _builtin(name):
+        return lambda mz: sonifier._mz_to_frequency(mz, name, freq_range)
+
     all_mappings = {
-        "linear": sonifier._mz_to_frequency_linear,
-        "inverse_log": sonifier._mz_to_frequency_inverse_log,
-        "power_law": sonifier._mz_to_frequency_power_law,
-        "musical_octaves": sonifier._mz_to_frequency_musical_octaves,
-        "chromatic": sonifier._mz_to_frequency_chromatic,
+        name: _builtin(name) for name in sonifier.FREQUENCY_MAPPINGS
     }
 
-    # Add custom mappings if provided
+    # Custom callables take (mz_value, mz_min, mz_max, freq_min, freq_max).
     if custom_mappings:
-        all_mappings.update(custom_mappings)
+        for name, func in custom_mappings.items():
+            all_mappings[name] = (
+                lambda mz, f=func: f(
+                    mz, sonifier.min_mz_overall, sonifier.max_mz_overall,
+                    freq_range[0], freq_range[1]))
 
     # Determine which mappings to plot
     if mapping_types == "all":
         mappings_to_plot = list(all_mappings.keys())
-    elif isinstance(mapping_types, list):
+    elif isinstance(mapping_types, (list, tuple)):
         mappings_to_plot = [m for m in mapping_types if m in all_mappings]
         if not mappings_to_plot:
             print(f"Warning: No valid mapping types found in {mapping_types}")
@@ -657,29 +669,7 @@ def plot_mz_to_frequency_mapping(
 
         for mz in mz_values:
             try:
-                if mapping_name == "linear":
-                    freq = mapping_func(
-                        mz_value=mz, freq_range=freq_range,
-                    )
-                elif mapping_name == "power_law":
-                    # Power law has an extra exponent parameter
-                    freq = mapping_func(
-                        mz_value=mz, freq_range=freq_range,
-                    )
-                elif mapping_name == "musical_octaves":
-                    # Musical octaves uses base_freq and num_octaves
-                    freq = mapping_func(
-                        mz_value=mz,
-                    )
-                elif mapping_name == "chromatic":
-                    # Chromatic scale uses base_freq and num_semitones
-                    freq = mapping_func(
-                        mz_value=mz,
-                    )
-                elif mapping_name == "inverse_log":
-                    freq = mapping_func(
-                        mz_value=mz, freq_range=freq_range,
-                    )
+                freq = mapping_func(mz)
             except Exception as e:
                 print(f"Error with {mapping_name} mapping: {e}")
                 freq = freq_range[0]  # Default to min frequency on error
@@ -709,6 +699,8 @@ def plot_mz_to_frequency_mapping(
     # Plot 2: Actual data distribution
     all_mz = []
     all_intensities = []
+    if num_scans is None:
+        num_scans = len(sonifier.processed_spectra_dfs)
     for scan_df in sonifier.processed_spectra_dfs[:num_scans]:
         if not scan_df.empty:
             all_mz.extend(scan_df.index.tolist())
@@ -724,9 +716,12 @@ def plot_mz_to_frequency_mapping(
         )
         axes[1].set_xlabel("m/z Value")
         axes[1].set_ylabel("Intensity")
-        axes[1].set_title(
-            f"m/z vs Intensity Distribution (First {num_scans} Scans)"
-        )
+        if num_scans == len(sonifier.processed_spectra_dfs):
+            axes[1].set_title("m/z vs Intensity Distribution (All Scans)")
+        else:
+            axes[1].set_title(
+                f"m/z vs Intensity Distribution (First {num_scans} Scans)"
+            )
         plt.colorbar(im, ax=axes[1], label="Count")
     else:
         axes[1].text(
@@ -776,7 +771,10 @@ def plot_scan_progression(
     top_mz_values = [mz for mz, _ in top_mz]
 
     # Create intensity matrix
-    num_scans_to_plot = min(num_scans, len(sonifier.processed_spectra_dfs))
+    if num_scans == None:
+        num_scans_to_plot = len(sonifier.processed_spectra_dfs)
+    else:
+        num_scans_to_plot = min(num_scans, len(sonifier.processed_spectra_dfs))
     intensity_matrix = np.zeros((len(top_mz_values), num_scans_to_plot))
 
     for scan_idx in range(num_scans_to_plot):
@@ -799,10 +797,16 @@ def plot_scan_progression(
 
     ax.set_xlabel("Scan Number")
     ax.set_ylabel("m/z Value")
-    ax.set_title(
+    if num_scans is None:
+            ax.set_title(
         f"Intensity Progression Across Scans (Top {top_n_mz} "
-        f"m/z values, first {num_scans_to_plot} scans)"
+        f"m/z values, all scans)"
     )
+    else:
+        ax.set_title(
+            f"Intensity Progression Across Scans (Top {top_n_mz} "
+            f"m/z values, first {num_scans_to_plot} scans)"
+        )
 
     # Set y-tick labels to m/z values
     ax.set_yticks(range(len(top_mz_values)))
@@ -1142,7 +1146,11 @@ def plot_spectrogram(
     audio_data: np.ndarray,
     sample_rate: int = 44100,
     title: str = "Spectrogram",
-    figsize: Tuple[int, int] = (12, 8)
+    figsize: Tuple[int, int] = (12, 8),
+    n_fft: int = 2048,
+    hop_length: int = 512,
+    y_axis: str = "log",
+    cmap: str = "magma",
 ):
     """
     Plot spectrogram of audio data.
@@ -1151,14 +1159,19 @@ def plot_spectrogram(
         audio_data: Audio signal array
         sample_rate: Audio sample rate
         title: Plot title
+        n_fft: FFT window size (frequency resolution)
+        hop_length: Samples between frames (time resolution)
+        y_axis: Frequency axis scale: 'log', 'linear' or 'mel'
+        cmap: Matplotlib colormap name
     """
     fig, ax = plt.subplots(figsize=figsize)
 
-    D = librosa.stft(audio_data)
+    D = librosa.stft(audio_data, n_fft=n_fft, hop_length=hop_length)
     D_db = librosa.amplitude_to_db(np.abs(D), ref=np.max)
 
     img = librosa.display.specshow(
-        D_db, sr=sample_rate, x_axis="time", y_axis="log", ax=ax
+        D_db, sr=sample_rate, hop_length=hop_length, x_axis="time",
+        y_axis=y_axis, ax=ax, cmap=cmap,
     )
     ax.set_title(title)
     fig.colorbar(img, ax=ax, format="%+2.0f dB")
@@ -1167,3 +1180,946 @@ def plot_spectrogram(
     plt.show()
 
     return fig
+
+def create_video(
+    sonifier,
+    output_path: str,
+    fps: int = 30,
+    dpi: int = 100,
+    show_spectrogram: bool = True,
+    show_waveform: bool = True,
+    show_mz_distribution: bool = False,
+    progress_callback: Optional[Callable[[int, int], None]] = None
+):
+    """
+    Create video visualization (original higher quality version).
+    
+    Args:
+        sonifier: MSSonifier object
+        output_path: Path for output video file (.mp4)
+        fps: Frames per second
+        dpi: Resolution
+        show_spectrogram: Show frequency spectrogram
+        show_waveform: Show audio waveform
+        show_mz_distribution: Show m/z distribution over time
+        progress_callback: Called as ``progress_callback(frame, total)``
+            while frames render; raise from it to abort.
+
+    Returns:
+        str: Path to created video file
+    """
+    if sonifier.current_audio_data is None:
+        print("No audio data. Run sonification first.")
+        return None
+    
+    audio = sonifier.current_audio_data
+    if audio.ndim > 1:
+        audio = audio[0]  # Take first channel
+    
+    sample_rate = sonifier.sample_rate
+    duration = len(audio) / sample_rate
+    
+    # Compute spectrogram
+    D = librosa.stft(audio, n_fft=2048, hop_length=512)
+    S_db = librosa.amplitude_to_db(np.abs(D), ref=np.max)
+    
+    # Setup figure
+    num_panels = sum([show_spectrogram, show_waveform, show_mz_distribution])
+    if num_panels == 0:
+        print("No panels selected for video")
+        return None
+    
+    fig = plt.figure(figsize=(14, 4 * num_panels))
+    gs = GridSpec(num_panels, 1, hspace=0.3)
+    
+    axes = []
+    panel_idx = 0
+    
+    # Spectrogram
+    if show_spectrogram:
+        ax_spec = fig.add_subplot(gs[panel_idx])
+        axes.append(ax_spec)
+        panel_idx += 1
+        
+        img = librosa.display.specshow(
+            S_db, sr=sample_rate, hop_length=512,
+            x_axis='time', y_axis="log", ax=ax_spec, cmap='magma'
+        )
+        ax_spec.set_title('Spectrogram', fontsize=14, fontweight='bold')
+        ax_spec.set_ylabel('Frequency (Hz)', fontsize=11)
+        fig.colorbar(img, ax=ax_spec, format='%+2.0f dB')
+        line_spec = ax_spec.axvline(x=0, color='cyan', linewidth=2, alpha=0.8)
+    
+    # Waveform
+    if show_waveform:
+        ax_wave = fig.add_subplot(gs[panel_idx])
+        axes.append(ax_wave)
+        panel_idx += 1
+        
+        times_wave = np.arange(len(audio)) / sample_rate
+        ax_wave.plot(times_wave, audio, color='steelblue', linewidth=0.5, alpha=0.7)
+        ax_wave.set_xlabel('Time (s)', fontsize=11)
+        ax_wave.set_ylabel('Amplitude', fontsize=11)
+        ax_wave.set_xlim(0, duration)
+        ax_wave.set_ylim(audio.min(), audio.max())
+        ax_wave.set_title('Waveform', fontsize=14, fontweight='bold')
+        ax_wave.grid(alpha=0.3)
+        line_wave = ax_wave.axvline(x=0, color='cyan', linewidth=2, alpha=0.8)
+    
+    # m/z distribution over time
+    if show_mz_distribution:
+        ax_mz = fig.add_subplot(gs[panel_idx])
+        axes.append(ax_mz)
+        
+        # Create simplified m/z timeline
+        if sonifier.processed_spectra_dfs:
+            num_spectra = len(sonifier.processed_spectra_dfs)
+            times_mz = np.linspace(0, duration, num_spectra)
+            
+            # Get dominant m/z at each time point
+            dominant_mzs = []
+            for df in sonifier.processed_spectra_dfs:
+                if not df.empty:
+                    max_idx = df['intensities'].idxmax()
+                    dominant_mzs.append(max_idx)
+                else:
+                    dominant_mzs.append(0)
+            
+            ax_mz.scatter(times_mz, dominant_mzs, c=dominant_mzs, 
+                         cmap='viridis', s=10, alpha=0.6)
+            ax_mz.set_xlabel('Time (s)', fontsize=11)
+            ax_mz.set_ylabel('Dominant m/z', fontsize=11)
+            ax_mz.set_xlim(0, duration)
+            ax_mz.set_title('m/z Distribution Over Time', fontsize=14, fontweight='bold')
+            ax_mz.grid(alpha=0.3)
+            line_mz = ax_mz.axvline(x=0, color='cyan', linewidth=2, alpha=0.8)
+    
+    plt.tight_layout()
+    
+    # Animation function
+    def animate(frame):
+        current_time = frame / fps
+        
+        artists = []
+        if show_spectrogram:
+            line_spec.set_xdata([current_time, current_time])
+            artists.append(line_spec)
+        
+        if show_waveform:
+            line_wave.set_xdata([current_time, current_time])
+            artists.append(line_wave)
+        
+        if show_mz_distribution:
+            line_mz.set_xdata([current_time, current_time])
+            artists.append(line_mz)
+        
+        return tuple(artists)
+    
+    # Create animation
+    total_frames = int(duration * fps)
+    anim = FuncAnimation(
+        fig, animate, frames=total_frames,
+        interval=1000/fps, blit=True
+    )
+    
+    # Save video
+    try:
+        writer = FFMpegWriter(fps=fps, bitrate=2000)
+        anim.save(output_path, writer=writer, dpi=dpi,
+                  progress_callback=progress_callback)
+        plt.close(fig)
+        # Add audio to video
+        _add_audio_to_video(output_path, audio, sample_rate, output_path)
+        print(f"Video saved to: {output_path}")
+        return output_path
+    except Exception as e:
+        print(f"Error creating video: {e}")
+        print("Make sure ffmpeg is installed: brew install ffmpeg (macOS) or apt-get install ffmpeg (Linux)")
+        plt.close(fig)
+        return None
+
+
+def animate_visualization(
+    sonifier,
+    output_path: str,
+    viz_type: str = 'spectrogram',
+    fps: int = 30,
+    dpi: int = 100,
+    duration_seconds: Optional[float] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None
+):
+    """
+    Animate any visualization type and save as video.
+    
+    Args:
+        sonifier: MSSonifier object
+        output_path: Path for output video file (.mp4)
+        viz_type: Type of visualization ('spectrogram', 'waveform', 'mfcc', 'chromagram')
+        fps: Frames per second
+        dpi: Resolution
+        duration_seconds: Duration of video (None = full audio length)
+        progress_callback: Called as ``progress_callback(frame, total)``
+            while frames render; raise from it to abort.
+
+    Returns:
+        str: Path to created video file
+    """
+    if sonifier.current_audio_data is None:
+        print("No audio data. Run sonification first.")
+        return None
+    
+    audio = sonifier.current_audio_data
+    if audio.ndim > 1:
+        audio = audio[0]
+    
+    sample_rate = sonifier.sample_rate
+    full_duration = len(audio) / sample_rate
+    
+    if duration_seconds is None:
+        duration_seconds = full_duration
+    else:
+        duration_seconds = min(duration_seconds, full_duration)
+    
+    # Create visualization based on type
+    fig, ax = plt.subplots(figsize=(14, 6))
+    
+    if viz_type == 'spectrogram':
+        D = librosa.stft(audio, n_fft=2048, hop_length=512)
+        S_db = librosa.amplitude_to_db(np.abs(D), ref=np.max)
+        img = librosa.display.specshow(
+            S_db, sr=sample_rate, hop_length=512,
+            x_axis='time', y_axis="log", ax=ax, cmap='magma'
+        )
+        ax.set_title('Spectrogram', fontsize=16, fontweight='bold')
+        plt.colorbar(img, ax=ax, format='%+2.0f dB')
+    
+    elif viz_type == 'waveform':
+        times = np.arange(len(audio)) / sample_rate
+        ax.plot(times, audio, linewidth=0.5)
+        ax.set_xlim(0, full_duration)
+        ax.set_ylim(audio.min(), audio.max())
+        ax.set_title('Waveform', fontsize=16, fontweight='bold')
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('Amplitude')
+        ax.grid(alpha=0.3)
+    
+    elif viz_type == 'mfcc':
+        mfccs = librosa.feature.mfcc(y=audio, sr=sample_rate, n_mfcc=13)
+        img = librosa.display.specshow(
+            mfccs, sr=sample_rate, x_axis='time', ax=ax, cmap='coolwarm'
+        )
+        ax.set_title('MFCC', fontsize=16, fontweight='bold')
+        plt.colorbar(img, ax=ax)
+    
+    elif viz_type == 'chromagram':
+        chroma = librosa.feature.chroma_stft(y=audio, sr=sample_rate)
+        img = librosa.display.specshow(
+            chroma, sr=sample_rate, x_axis='time', y_axis='chroma', ax=ax, cmap='viridis'
+        )
+        ax.set_title('Chromagram', fontsize=16, fontweight='bold')
+        plt.colorbar(img, ax=ax)
+    
+    else:
+        print(f"Unknown visualization type: {viz_type}")
+        plt.close(fig)
+        return None
+    
+    # Add playhead line
+    line = ax.axvline(x=0, color='cyan', linewidth=2, alpha=0.8)
+    plt.tight_layout()
+    
+    # Animation function
+    def animate(frame):
+        current_time = frame / fps
+        line.set_xdata([current_time, current_time])
+        return line,
+    
+    # Create animation
+    total_frames = int(duration_seconds * fps)
+    anim = FuncAnimation(
+        fig, animate, frames=total_frames,
+        interval=1000/fps, blit=True
+    )
+    
+    # Save video
+    try:
+        writer = FFMpegWriter(fps=fps, bitrate=2000)
+        anim.save(output_path, writer=writer, dpi=dpi,
+                  progress_callback=progress_callback)
+        plt.close(fig)
+        # Add audio to video
+        _add_audio_to_video(output_path, audio, sample_rate, output_path)
+        print(f"Video saved to: {output_path}")
+        return output_path
+    except Exception as e:
+        print(f"Error creating video: {e}")
+        plt.close(fig)
+        return None
+
+
+def create_3d_scan_video(
+    sonifier,
+    output_path: str,
+    window_size: int = 50,
+    duration_seconds: float = 15.0,
+    fps: int = 15,
+    dpi: int = 100,
+    azimuth_rotation: bool = True,
+    progress_callback: Optional[Callable[[int, int], None]] = None
+):
+    """
+    Create animated 3D plot showing a moving window of scans.
+    
+    Args:
+        sonifier: MSSonifier object with processed_spectra_dfs
+        output_path: Path for output video file (.mp4)
+        window_size: Number of scans to show at once
+        duration_seconds: Video duration
+        fps: Frames per second
+        dpi: Resolution
+        azimuth_rotation: Whether to rotate the 3D view
+        progress_callback: Called as ``progress_callback(frame, total)``
+            while frames render; raise from it to abort.
+
+    Returns:
+        str: Path to created video file
+    """
+    if not sonifier.processed_spectra_dfs:
+        print("No spectra data available")
+        return None
+    
+    print(f"Creating 3D scan animation with {window_size} scans visible at once...")
+    
+    all_scans = []
+    for i, df in enumerate(sonifier.processed_spectra_dfs):
+        if not df.empty:
+            mzs = df.index.values
+            intensities = df['intensities'].values
+            scan_times = np.full_like(mzs, i, dtype=float)
+            all_scans.append((scan_times, mzs, intensities))
+    
+    if not all_scans:
+        print("No valid scan data")
+        return None
+    
+    total_scans = len(all_scans)
+    
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    ax.set_xlim(0, total_scans)
+    ax.set_ylim(sonifier.min_mz_overall, sonifier.max_mz_overall)
+    ax.set_zlim(0, sonifier.max_intensity_overall * 1.1)
+    
+    ax.set_xlabel('Scan Number', fontsize=10)
+    ax.set_ylabel('m/z', fontsize=10)
+    ax.set_zlabel('Intensity', fontsize=10)
+    ax.set_title('3D Mass Spectrum - Moving Window', fontsize=14, fontweight='bold')
+    
+    scatter = ax.scatter([], [], [], c=[], cmap='plasma', s=2, alpha=0.6)
+    
+    total_frames = int(duration_seconds * fps)
+    positions = np.linspace(0, total_scans - window_size, total_frames)
+    
+    def animate(frame):
+        start_scan = int(positions[frame])
+        end_scan = start_scan + window_size
+        
+        window_scans = []
+        window_mzs = []
+        window_intensities = []
+        
+        for i in range(start_scan, min(end_scan, total_scans)):
+            scan_times, mzs, intensities = all_scans[i]
+            window_scans.extend(scan_times)
+            window_mzs.extend(mzs)
+            window_intensities.extend(intensities)
+        
+        if window_scans:
+            scatter._offsets3d = (window_scans, window_mzs, window_intensities)
+            log_intensities = np.log10(np.array(window_intensities) + 1)
+            scatter.set_array(log_intensities)
+        
+        if azimuth_rotation:
+            ax.view_init(elev=20, azim=30 + frame * 0.5)
+        
+        progress = (frame / total_frames) * 100
+        ax.set_title(f'3D Mass Spectrum - Scans {start_scan}-{end_scan} ({progress:.0f}%)', 
+                     fontsize=14, fontweight='bold')
+        
+        return scatter,
+    
+    print(f"Rendering {total_frames} frames...")
+    
+    anim = FuncAnimation(
+        fig, animate, frames=total_frames,
+        interval=1000/fps, blit=False
+    )
+    
+    try:
+        writer = FFMpegWriter(fps=fps, bitrate=2000)
+        anim.save(output_path, writer=writer, dpi=dpi,
+                  progress_callback=progress_callback)
+        plt.close(fig)
+        
+        if sonifier.current_audio_data is not None:
+            audio = sonifier.current_audio_data
+            if audio.ndim > 1:
+                audio = audio[0]
+            _add_audio_to_video(output_path, audio, sonifier.sample_rate, output_path)
+        
+        print(f"3D video saved to: {output_path}")
+        return output_path
+    except Exception as e:
+        print(f"Error creating 3D video: {e}")
+        plt.close(fig)
+        return None
+
+
+def create_3d_heatmap_video(
+    sonifier,
+    output_path: str,
+    duration_seconds: float = 10.0,
+    fps: int = 15,
+    dpi: int = 100,
+    rotate_speed: float = 1.0,
+    progress_callback: Optional[Callable[[int, int], None]] = None
+):
+    """Create rotating 3D heatmap with better intensity visualization.
+
+    Args:
+        progress_callback: Called as ``progress_callback(frame, total)``
+            while frames render; raise from it to abort.
+    """
+    if not sonifier.processed_spectra_dfs:
+        return None
+    
+    print("Creating rotating 3D heatmap...")
+    
+    # Extract all data
+    max_points = 5000
+    all_scans = []
+    all_mzs = []
+    all_intensities = []
+    
+    for i, df in enumerate(sonifier.processed_spectra_dfs):
+        if not df.empty:
+            all_scans.extend([i] * len(df))
+            all_mzs.extend(df.index.values)
+            all_intensities.extend(df['intensities'].values)
+    
+    all_scans = np.array(all_scans)
+    all_mzs = np.array(all_mzs)
+    all_intensities = np.array(all_intensities)
+    
+    # Filter out low intensity noise (keep top 70%)
+    intensity_threshold = np.percentile(all_intensities, 30)
+    mask = all_intensities >= intensity_threshold
+    all_scans = all_scans[mask]
+    all_mzs = all_mzs[mask]
+    all_intensities = all_intensities[mask]
+    
+    print(f"Filtered to {len(all_scans)} points (removed bottom 30%)")
+    
+    # Apply log scaling to intensities for better visualization
+    log_intensities = np.log10(all_intensities + 1)
+    
+    # Subsample if still too many points
+    if len(all_scans) > max_points:
+        idx = np.random.choice(len(all_scans), max_points, replace=False)
+        all_scans = all_scans[idx]
+        all_mzs = all_mzs[idx]
+        log_intensities = log_intensities[idx]
+        print(f"Subsampled to {max_points} points for performance")
+    
+    # Setup figure
+    fig = plt.figure(figsize=(14, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Create scatter plot with log-scaled intensities
+    scatter = ax.scatter(
+        all_scans, all_mzs, log_intensities,
+        c=log_intensities, 
+        cmap='hot',  # Better for intensity visualization
+        s=5,  # Larger points
+        alpha=0.8,  # More opaque
+        vmin=np.percentile(log_intensities, 5),  # Adjust color range
+        vmax=np.percentile(log_intensities, 95)
+    )
+    
+    ax.set_xlabel('Scan Number', fontsize=11, labelpad=10)
+    ax.set_ylabel('m/z', fontsize=11, labelpad=10)
+    ax.set_zlabel('Log10(Intensity)', fontsize=11, labelpad=10)
+    ax.set_title('3D Mass Spectrum Heatmap (Log Scale)', 
+                 fontsize=14, fontweight='bold', pad=20)
+    
+    # Set better viewing angle
+    ax.view_init(elev=25, azim=45)
+    
+    # Animation function
+    total_frames = int(duration_seconds * fps)
+    
+    def animate(frame):
+        azim = 45 + frame * rotate_speed
+        ax.view_init(elev=25, azim=azim)
+        return scatter,
+    
+    print(f"Rendering {total_frames} frames...")
+    
+    anim = FuncAnimation(
+        fig, animate, frames=total_frames,
+        interval=1000/fps, blit=False
+    )
+    
+    # Save
+    writer = FFMpegWriter(fps=fps, bitrate=1500)
+    anim.save(output_path, writer=writer, dpi=dpi,
+                  progress_callback=progress_callback)
+    plt.close(fig)
+    
+    if sonifier.current_audio_data is not None:
+        audio = sonifier.current_audio_data
+        if audio.ndim > 1:
+            audio = audio[0]
+        _add_audio_to_video(output_path, audio, sonifier.sample_rate, output_path)
+    
+    print(f"Rotating 3D heatmap saved to: {output_path}")
+    return output_path
+
+
+def create_comparison_video(
+    sonifier,
+    audio_dict: dict,
+    output_path: str,
+    fps: int = 15,
+    dpi: int = 80,
+    progress_callback: Optional[Callable[[int, int], None]] = None
+):
+    """
+    Create side-by-side comparison video of multiple sonifications.
+    
+    Args:
+        sonifier: MSSonifier object (for sample_rate)
+        audio_dict: Dictionary mapping labels to audio arrays
+        output_path: Path for output video file (.mp4)
+        fps: Frames per second
+        dpi: Resolution
+        progress_callback: Called as ``progress_callback(frame, total)``
+            while frames render; raise from it to abort.
+
+    Returns:
+        str: Path to created video file
+    """
+    # Filter out None values
+    audio_dict = {k: v for k, v in audio_dict.items() if v is not None}
+    
+    if len(audio_dict) < 2:
+        print("Need at least 2 audio tracks for comparison")
+        return None
+    
+    num_audio = len(audio_dict)
+    sample_rate = sonifier.sample_rate
+    
+    # Find longest duration and normalize all to same length
+    max_duration = 0
+    max_length = 0
+    for audio in audio_dict.values():
+        if audio.ndim > 1:
+            audio = audio[0]
+        duration = len(audio) / sample_rate
+        max_duration = max(max_duration, duration)
+        max_length = max(max_length, len(audio))
+    
+    # Mix audio tracks together (equal weighting)
+    mixed_audio = np.zeros(max_length, dtype=np.float32)
+    for audio in audio_dict.values():
+        if audio.ndim > 1:
+            audio = audio[0]
+        # Pad shorter tracks with zeros
+        padded = np.zeros(max_length, dtype=np.float32)
+        padded[:len(audio)] = audio
+        mixed_audio += padded
+    
+    # Normalize mixed audio
+    mixed_audio /= len(audio_dict)
+    max_val = np.max(np.abs(mixed_audio))
+    if max_val > 0:
+        mixed_audio /= max_val
+    
+    # Compute spectrograms for all
+    spectrograms = {}
+    for label, audio in audio_dict.items():
+        if audio.ndim > 1:
+            audio = audio[0]
+        D = librosa.stft(audio, n_fft=1024, hop_length=512)
+        S_db = librosa.amplitude_to_db(np.abs(D), ref=np.max)
+        spectrograms[label] = S_db
+    
+    # Setup figure
+    fig, axes = plt.subplots(num_audio, 1, figsize=(14, 4 * num_audio))
+    if num_audio == 1:
+        axes = [axes]
+    
+    lines = []
+    for idx, (label, S_db) in enumerate(spectrograms.items()):
+        ax = axes[idx]
+        img = librosa.display.specshow(
+            S_db, sr=sample_rate, hop_length=512,
+            x_axis='time', y_axis="log", ax=ax, cmap='magma'
+        )
+        ax.set_title(label, fontsize=14, fontweight='bold')
+        ax.set_ylabel('Frequency (Hz)', fontsize=11)
+        if idx == num_audio - 1:
+            ax.set_xlabel('Time (s)', fontsize=11)
+        fig.colorbar(img, ax=ax, format='%+2.0f dB')
+        
+        line = ax.axvline(x=0, color='cyan', linewidth=2, alpha=0.8)
+        lines.append(line)
+    
+    plt.tight_layout()
+    
+    # Animation function
+    def animate(frame):
+        current_time = frame / fps
+        for line in lines:
+            line.set_xdata([current_time, current_time])
+        return tuple(lines)
+    
+    # Create animation
+    total_frames = int(max_duration * fps)
+    anim = FuncAnimation(
+        fig, animate, frames=total_frames,
+        interval=1000/fps, blit=True
+    )
+    
+    # Save video
+    try:
+        writer = FFMpegWriter(fps=fps, bitrate=1500)
+        anim.save(output_path, writer=writer, dpi=dpi,
+                  progress_callback=progress_callback)
+        plt.close(fig)
+        
+        # Add mixed audio
+        _add_audio_to_video(output_path, mixed_audio, sample_rate, output_path)
+        
+        print(f"Comparison video with mixed audio saved to: {output_path}")
+        return output_path
+    except Exception as e:
+        print(f"Error creating comparison video: {e}")
+        plt.close(fig)
+        return None
+
+
+def create_3d_waterfall_video(
+    sonifier,
+    output_path: str,
+    duration_seconds: float = 20.0,
+    fps: int = 30,
+    dpi: int = 100,
+    max_freq: float = 5000,
+    rotate: bool = True,
+    progress_callback: Optional[Callable[[int, int], None]] = None
+):
+    """Create animated 3D waterfall that builds up scan by scan.
+
+    Args:
+        progress_callback: Called as ``progress_callback(frame, total)``
+            while frames render; raise from it to abort.
+    """
+    if sonifier.current_audio_data is None:
+        return None
+    
+    audio = sonifier.current_audio_data
+    if audio.ndim > 1:
+        audio = audio[0]
+    
+    sample_rate = sonifier.sample_rate
+    
+    print("Creating 3D waterfall animation...")
+    
+    n_fft = 2048
+    hop_length = 512
+    D = librosa.stft(audio, n_fft=n_fft, hop_length=hop_length)
+    D_db = librosa.amplitude_to_db(np.abs(D), ref=np.max)
+    
+    freqs = librosa.fft_frequencies(sr=sample_rate, n_fft=n_fft)
+    times = librosa.frames_to_time(np.arange(D.shape[1]), sr=sample_rate, hop_length=hop_length)
+    
+    freq_mask = freqs <= max_freq
+    freqs = freqs[freq_mask]
+    D_db = D_db[freq_mask, :]
+    
+    # Downsampling for smoother surface
+    step_freq = 3
+    step_time = 8
+    freqs = freqs[::step_freq]
+    D_db = D_db[::step_freq, ::step_time]
+    times = times[::step_time]
+    
+    # Apply Gaussian smoothing to reduce spikiness
+    D_db = gaussian_filter(D_db, sigma=(1.5, 1.5))
+    
+    total_scans = D_db.shape[1]
+    
+    print(f"Waterfall dimensions: {len(freqs)} frequencies × {total_scans} time steps")
+    
+    fig = plt.figure(figsize=(14, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    ax.set_xlim(0, times[-1])
+    ax.set_ylim(freqs[0], freqs[-1])
+    ax.set_zlim(D_db.min(), D_db.max())
+    
+    ax.set_xlabel('Time (s)', fontsize=11, labelpad=10)
+    ax.set_ylabel('Frequency (Hz)', fontsize=11, labelpad=10)
+    ax.set_zlabel('Magnitude (dB)', fontsize=11, labelpad=10)
+    
+    ax.view_init(elev=30, azim=45)
+    
+    times_mesh, freqs_mesh = np.meshgrid(times, freqs, indexing='ij')
+    
+    total_frames = int(duration_seconds * fps)
+    
+    def animate(frame):
+        scan_progress = int((frame / total_frames) * total_scans)
+        scan_progress = max(1, scan_progress)
+        
+        while len(ax.collections) > 0:
+            ax.collections[0].remove()
+
+        terrain = plt.get_cmap("terrain").resampled(256)
+        newcolors = terrain(np.linspace(0.2, 1, 256))
+        newcolors[:1, :] = np.array([39/256, 30/256, 100/256, 1])
+        newcmp = ListedColormap(newcolors)
+        
+        surf = ax.plot_surface(
+            times_mesh[:scan_progress, :], 
+            freqs_mesh[:scan_progress, :], 
+            D_db.T[:scan_progress, :],
+            cmap=newcmp, 
+            linewidth=0,  # Remove mesh lines
+            antialiased=True,
+            alpha=0.9,
+            shade=True,  # Enable smooth shading
+            vmin=D_db.min(),
+            vmax=D_db.max()
+        )
+        
+        if rotate:
+            azim = 45 + (frame / total_frames) * 90
+            ax.view_init(elev=30, azim=azim)
+        
+        progress = (scan_progress / total_scans) * 100
+        ax.set_title(f'3D Spectrogram Waterfall - {progress:.0f}% Complete', 
+                     fontsize=14, fontweight='bold', pad=20)
+        
+        return surf,
+    
+    print(f"Rendering {total_frames} frames...")
+    
+    anim = FuncAnimation(
+        fig, animate, frames=total_frames,
+        interval=1000/fps, blit=False
+    )
+    
+    writer = FFMpegWriter(fps=fps, bitrate=3000)
+    anim.save(output_path, writer=writer, dpi=dpi,
+                  progress_callback=progress_callback)
+    plt.close(fig)
+    
+    _add_audio_to_video(output_path, audio, sample_rate, output_path)
+    
+    print(f"3D waterfall video saved to: {output_path}")
+    return output_path
+
+
+def create_3d_spectrogram_buildup_video(
+    sonifier,
+    output_path: str,
+    duration_seconds: float = 20.0,
+    fps: int = 30,
+    dpi: int = 100,
+    max_freq: float = 5000,
+    colormap: str = 'plasma',
+    style: str = 'bars',  # 'bars' or 'lines'
+    progress_callback: Optional[Callable[[int, int], None]] = None
+):
+    """Create animated 3D spectrogram that builds up scan by scan with bars.
+
+    Args:
+        progress_callback: Called as ``progress_callback(frame, total)``
+            while frames render; raise from it to abort.
+    """
+    if sonifier.current_audio_data is None:
+        return None
+    
+    audio = sonifier.current_audio_data
+    if audio.ndim > 1:
+        audio = audio[0]
+    
+    sample_rate = sonifier.sample_rate
+    
+    print("Creating 3D spectrogram buildup animation...")
+    
+    # Compute spectrogram
+    n_fft = 2048
+    hop_length = 512
+    D = librosa.stft(audio, n_fft=n_fft, hop_length=hop_length)
+    D_db = librosa.amplitude_to_db(np.abs(D), ref=np.max)
+    
+    # Get frequency and time arrays
+    freqs = librosa.fft_frequencies(sr=sample_rate, n_fft=n_fft)
+    times = librosa.frames_to_time(np.arange(D.shape[1]), sr=sample_rate, hop_length=hop_length)
+    
+    # Apply frequency limit
+    freq_mask = freqs <= max_freq
+    freqs = freqs[freq_mask]
+    D_db = D_db[freq_mask, :]
+    
+    # Downsample for performance
+    step_freq = 8
+    step_time = 3
+    freqs = freqs[::step_freq]
+    D_db = D_db[::step_freq, ::step_time]
+    times = times[::step_time]
+    
+    total_scans = D_db.shape[1]
+    
+    print(f"Spectrogram dimensions: {len(freqs)} frequencies × {total_scans} time steps")
+    
+    # Setup figure
+    fig = plt.figure(figsize=(14, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Set fixed limits
+    ax.set_xlim(0, times[-1])
+    ax.set_ylim(freqs[0], freqs[-1])
+    ax.set_zlim(D_db.min(), D_db.max())
+    
+    ax.set_xlabel('Time (s)', fontsize=11, labelpad=10)
+    ax.set_ylabel('Frequency (Hz)', fontsize=11, labelpad=10)
+    ax.set_zlabel('Magnitude (dB)', fontsize=11, labelpad=10)
+    
+    ax.view_init(elev=25, azim=45)
+    
+    # Prepare bar positions
+    time_positions = times
+    freq_positions = freqs
+    
+    total_frames = int(duration_seconds * fps)
+
+    # Pre-compute constants for bars style outside the animation loop.
+    dt      = (times[1] - times[0]) if len(times) > 1 else 0.1
+    df      = (freqs[1] - freqs[0]) if len(freqs) > 1 else 10.0
+    db_min  = D_db.min()
+    db_range = D_db.max() - db_min
+    cmap_fn = plt.get_cmap(colormap)
+
+    # Track which time slices have already been drawn so each frame only
+    # adds NEW slices. This makes the total work O(total_scans) instead of
+    # O(frames × avg_scan_progress), which was the cause of the hang.
+    prev_progress = [0]
+
+    def animate(frame):
+        scan_progress = max(1, int((frame / total_frames) * total_scans))
+        new_start = prev_progress[0]
+        prev_progress[0] = scan_progress
+
+        if style == 'lines':
+            for t_idx in range(new_start, scan_progress):
+                time_val = time_positions[t_idx]
+                magnitudes = D_db[:, t_idx]
+                color = cmap_fn(t_idx / total_scans)
+                ax.plot(
+                    [time_val] * len(freq_positions),
+                    freq_positions,
+                    magnitudes,
+                    color=color,
+                    linewidth=1.5,
+                    alpha=0.7,
+                )
+
+        else:  # bars
+            for t_idx in range(new_start, scan_progress):
+                time_val = time_positions[t_idx]
+                magnitudes = D_db[:, t_idx]
+                mask = magnitudes > db_min + 5
+                if not np.any(mask):
+                    continue
+                mags_sel  = magnitudes[mask]
+                freqs_sel = freq_positions[mask]
+                colors = cmap_fn((mags_sel - db_min) / (db_range + 1e-8))
+                ax.bar3d(
+                    np.full(mask.sum(), time_val),
+                    freqs_sel,
+                    np.full(mask.sum(), db_min),
+                    dt, df,
+                    mags_sel - db_min,
+                    color=colors,
+                    alpha=0.8,
+                    shade=True,
+                )
+
+        progress = (scan_progress / total_scans) * 100
+        style_name = "Lines" if style == 'lines' else "Bars"
+        ax.set_title(f'3D Spectrogram ({style_name}) - {progress:.0f}% Complete', 
+                     fontsize=14, fontweight='bold', pad=20)
+        
+        azim = 45 + (frame / total_frames) * 60
+        ax.view_init(elev=25, azim=azim)
+        
+        return ax,
+    
+    print(f"Rendering {total_frames} frames...")
+    
+    anim = FuncAnimation(
+        fig, animate, frames=total_frames,
+        interval=1000/fps, blit=False
+    )
+    
+    # Save
+    writer = FFMpegWriter(fps=fps, bitrate=3000)
+    anim.save(output_path, writer=writer, dpi=dpi,
+                  progress_callback=progress_callback)
+    plt.close(fig)
+    
+    # Add audio
+    _add_audio_to_video(output_path, audio, sample_rate, output_path)
+    
+    print(f"3D spectrogram buildup video saved to: {output_path}")
+    return output_path
+
+
+def _add_audio_to_video(video_path, audio_data, sample_rate, output_path):
+    """Combine video and audio using FFmpeg."""
+    from . import io
+    
+    # Create temp files
+    temp_audio = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+    temp_output = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+    temp_audio.close()
+    temp_output.close()
+    
+    # Save audio
+    audio_normalized = io.normalize_audio_to_16bit(audio_data)
+    io.save_wav(temp_audio.name, audio_normalized, sample_rate)
+    
+    # Combine with FFmpeg
+    cmd = [
+        'ffmpeg', '-y', '-loglevel', 'error',
+        '-i', video_path,
+        '-i', temp_audio.name,
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-shortest',
+        temp_output.name
+    ]
+    
+    subprocess.run(cmd)
+    
+    # Replace original with merged version (shutil.move works across devices)
+    import shutil
+    shutil.move(temp_output.name, output_path)
+    
+    # Cleanup
+    os.remove(temp_audio.name)

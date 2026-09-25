@@ -2,6 +2,7 @@ from .sonifier import MSSonifier
 from .io import load_mzml_data, preprocess_spectra
 from .midi_generator import (
     MSSonifierMidi, MidiConfig, MusicMeter, QuantizationMode)
+from .rhythm import RhythmConfig
 from . import effects
 from . import visualizations
 
@@ -12,11 +13,11 @@ __all__ = [
     "MSSonifier",
     "MSSonifierMidi",
     "MidiConfig",
+    "RhythmConfig",
     # Enums and constants
     "MusicMeter",
     "QuantizationMode",
     # Main functions
-    "create_microtonal_config",
     "load_mzml_data",
     "preprocess_spectra",
     # Modules
