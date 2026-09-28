@@ -1,0 +1,109 @@
+# Test the one-click installers on real macOS and Windows machines: build
+# the wheel, install it with the installer scripts (which also fetch uv,
+# since the runners don't have it), check the app/shortcuts and that the
+# GUI serves, then uninstall.
+
+name: Installers
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "installer/**"
+      - "pyproject.toml"
+      - "ms_music/gui/**"
+      - ".github/workflows/installers.yml"
+
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel]  # Apple Silicon and Intel
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the wheel
+        run: python -m pip install build && python -m build --wheel
+      - name: Install with the installer script
+        run: |
+          MS_MUSIC_PACKAGE="$(ls "$PWD"/dist/*.whl)" MS_MUSIC_SKIP_OPEN=1 \
+            bash installer/install_macos.sh
+      - name: Check the app and shortcut
+        run: |
+          test -x "$HOME/Applications/ms_music.app/Contents/MacOS/ms_music"
+          test -f "$HOME/Applications/ms_music.app/Contents/Resources/icon.icns"
+          plutil -lint "$HOME/Applications/ms_music.app/Contents/Info.plist"
+          test -L "$HOME/Desktop/ms_music"
+      - name: Start the GUI and check it serves
+        run: |
+          "$HOME/Applications/ms_music.app/Contents/MacOS/ms_music" --no-browser &
+          for i in $(seq 1 120); do
+            curl -sf http://127.0.0.1:8765/ms_music/ping && exit 0
+            sleep 2
+          done
+          cat "$HOME/Library/Logs/ms_music/gui.log"
+          exit 1
+      - name: Second launch reuses the running GUI
+        run: |
+          "$HOME/.local/bin/ms-music" --no-browser
+          grep "already running" "$HOME/Library/Logs/ms_music/gui.log"
+      - name: Uninstall
+        run: |
+          MS_MUSIC_REMOVE_CACHE=yes bash installer/uninstall_macos.sh
+          test ! -e "$HOME/Applications/ms_music.app"
+          test ! -e "$HOME/Desktop/ms_music"
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the wheel and the .bat installers
+        run: |
+          python -m pip install build
+          python -m build --wheel
+          python installer/build_release_assets.py installers
+      - name: Install with "Install ms_music.bat"
+        shell: pwsh
+        run: |
+          $env:MS_MUSIC_PACKAGE = (Get-ChildItem dist\*.whl).FullName
+          $env:MS_MUSIC_SKIP_OPEN = '1'
+          $env:MS_MUSIC_NO_PAUSE = '1'
+          $p = Start-Process -FilePath "installers\Install ms_music.bat" -Wait -NoNewWindow -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer failed ($($p.ExitCode))" }
+      - name: Check the shortcuts
+        shell: pwsh
+        run: |
+          $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'ms_music.lnk'
+          $start = Join-Path ([Environment]::GetFolderPath('Programs')) 'ms_music.lnk'
+          if (-not (Test-Path $desktop)) { throw "no Desktop shortcut" }
+          if (-not (Test-Path $start)) { throw "no Start-menu shortcut" }
+          $target = (New-Object -ComObject WScript.Shell).CreateShortcut($desktop).TargetPath
+          if (-not (Test-Path $target)) { throw "shortcut target missing: $target" }
+      - name: Start the GUI and check it serves
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:USERPROFILE '.local\bin\ms-music.exe'
+          Start-Process -FilePath $exe -ArgumentList '--no-browser'
+          for ($i = 0; $i -lt 120; $i++) {
+            try { Invoke-RestMethod http://127.0.0.1:8765/ms_music/ping; exit 0 } catch { Start-Sleep 2 }
+          }
+          Get-Content (Join-Path $env:LOCALAPPDATA 'ms_music\gui.log')
+          exit 1
+      - name: Uninstall with "Uninstall ms_music.bat"
+        shell: pwsh
+        run: |
+          Get-Process | Where-Object { $_.Path -like '*ms-music*' -or $_.Path -like '*uv\tools*' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          $env:MS_MUSIC_REMOVE_CACHE = 'yes'
+          $env:MS_MUSIC_NO_PAUSE = '1'
+          $p = Start-Process -FilePath "installers\Uninstall ms_music.bat" -Wait -NoNewWindow -PassThru
+          $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'ms_music.lnk'
+          if (Test-Path $desktop) { throw "Desktop shortcut still there" }
