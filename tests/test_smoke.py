@@ -70,9 +70,11 @@ def test_effects_are_enumerable():
 @pytest.mark.parametrize(
     "kwargs",
     [
-        dict(scale="major", root_note="C"),                       # 12-TET
+        dict(scale="major", root_note="C"),  # 12-TET
         dict(scale="19_edo_diatonic", root_note="C", edo_divisions=19),  # EDO
-        dict(scale="just_major", root_note="C", use_just_intonation=True),  # JI
+        dict(
+            scale="just_major", root_note="C", use_just_intonation=True
+        ),  # JI
     ],
 )
 def test_quantizer_both_distance_metrics(kwargs):
@@ -112,9 +114,15 @@ def test_midi_config_coerces_strings_to_enums():
         MidiConfig(quantization_mode="bogus")
 
 
-def _flanger_scalar_reference(audio_data, sample_rate, delay_ms=5.0,
-                              depth_ms=3.0, rate_hz=0.3, feedback=0.4,
-                              dry_wet_mix=0.5):
+def _flanger_scalar_reference(
+    audio_data,
+    sample_rate,
+    delay_ms=5.0,
+    depth_ms=3.0,
+    rate_hz=0.3,
+    feedback=0.4,
+    dry_wet_mix=0.5,
+):
     """Pre-vectorization scalar flanger, used to pin apply_flanger's output."""
     from ms_music import effects as fx
 
@@ -145,10 +153,10 @@ def _flanger_scalar_reference(audio_data, sample_rate, delay_ms=5.0,
 @pytest.mark.parametrize(
     "delay_ms, depth_ms, feedback",
     [
-        (5.0, 3.0, 0.4),   # d_min > 1 -> block path
+        (5.0, 3.0, 0.4),  # d_min > 1 -> block path
         (5.0, 3.0, -0.6),  # negative feedback
-        (5.0, 0.0, 0.5),   # zero depth (constant delay)
-        (1.0, 5.0, 0.4),   # depth >= base -> scalar fallback path
+        (5.0, 0.0, 0.5),  # zero depth (constant delay)
+        (1.0, 5.0, 0.4),  # depth >= base -> scalar fallback path
     ],
 )
 def test_flanger_matches_scalar_reference(delay_ms, depth_ms, feedback):
@@ -177,8 +185,9 @@ def test_overdrive_asymmetric_clipping_is_vectorized_correctly():
     audio = rng.standard_normal(3000).astype(np.float32)
     drive, output_level = 4.0, 0.5
 
-    got = effects.apply_overdrive(audio, 22050, drive=drive, tone=0.5,
-                                  output_level=output_level)
+    got = effects.apply_overdrive(
+        audio, 22050, drive=drive, tone=0.5, output_level=output_level
+    )
 
     driven = effects._validate_audio_input(audio, "Overdrive") * drive
     ref = np.zeros_like(driven)

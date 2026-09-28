@@ -25,7 +25,9 @@ def loaded_controller(tmp_path):
     sr = 22050
     t = np.linspace(0, 0.5, int(sr * 0.5), endpoint=False)
     path = tmp_path / "tone.wav"
-    save_wav(str(path), (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32), sr)
+    save_wav(
+        str(path), (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32), sr
+    )
     c = SonifierController()
     c.load_wav(str(path), sr)
     return c
@@ -85,8 +87,16 @@ def test_web_app_serves_page():
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST")}
     env["PYTHONUNBUFFERED"] = "1"
     proc = subprocess.Popen(
-        [sys.executable, "-m", "ms_music.gui", "--no-browser", "--port", str(port)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        [
+            sys.executable,
+            "-m",
+            "ms_music.gui",
+            "--no-browser",
+            "--port",
+            str(port),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         env=env,
     )
     try:
@@ -94,17 +104,22 @@ def test_web_app_serves_page():
         html = None
         while time.time() < deadline and proc.poll() is None:
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2) as r:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/", timeout=2
+                ) as r:
                     html = r.read().decode()
                 break
             except OSError:
                 time.sleep(0.5)
-        assert html is not None, proc.stdout.read().decode() if proc.poll() else "timeout"
+        assert html is not None, (
+            proc.stdout.read().decode() if proc.poll() else "timeout"
+        )
         assert "ms_music" in html
         # No audio has been generated yet, so the audio route has nothing.
         with pytest.raises(urllib.error.HTTPError) as err:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/ms_music/audio/0.wav",
-                                   timeout=5)
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/ms_music/audio/0.wav", timeout=5
+            )
         assert err.value.code == 404
     finally:
         proc.terminate()
@@ -134,10 +149,28 @@ def ms_controller():
     dfs = []
     for _ in range(30):
         mz = np.sort(rng.choice(pool, 8, replace=False))
-        dfs.append(pd.DataFrame({"intensities": rng.uniform(1, 50, 8)},
-                                index=pd.Index(mz, name="mz")))
-    s = MSSonifier(filepath="", total_duration_minutes=2 / 60, sample_rate=8000)
+        dfs.append(
+            pd.DataFrame(
+                {
+                    "intensities": rng.uniform(1, 50, 8),
+                    "mobility": 0.6 + mz / 1000,
+                },
+                index=pd.Index(mz, name="mz"),
+            )
+        )
+    s = MSSonifier(
+        filepath="", total_duration_minutes=2 / 60, sample_rate=8000
+    )
     s.processed_spectra_dfs = dfs
+    # MS2-style metadata and ion mobility, so every catalog plot applies.
+    s.retention_time_list = [i * 0.1 for i in range(30)]
+    s.precursor_mz_list = [float(pool[i % 20]) for i in range(30)]
+    s.charge_list = [2 + i % 2 for i in range(30)]
+    s.ion_mobility_data = {
+        "unit": "1/K0",
+        "range": (0.7, 1.4),
+        "per_spectrum": [1.0] * 30,
+    }
     s.max_intensity_overall = max(d["intensities"].max() for d in dfs)
     s.min_mz_overall, s.max_mz_overall = float(pool.min()), float(pool.max())
     c = SonifierController()
@@ -176,15 +209,18 @@ def test_snapshots_dropped_when_sample_rate_changes(ms_controller):
 def test_function_param_spec_skip_and_overrides():
     def f(audio, sr, n=3, *args, cmap="viridis", flag=False, **kw):
         pass
+
     spec = function_param_spec(f, skip={"audio", "sr"}, overrides={"n": 7})
     assert spec == [("n", 7), ("cmap", "viridis"), ("flag", False)]
 
 
-@pytest.mark.parametrize("entry", catalog.PLOTS + catalog.VIDEOS,
-                         ids=lambda e: e.label)
+@pytest.mark.parametrize(
+    "entry", catalog.PLOTS + catalog.VIDEOS, ids=lambda e: e.label
+)
 def test_catalog_forms_build(entry):
-    spec = function_param_spec(entry.func, skip=catalog.skip_names(),
-                               overrides=entry.defaults)
+    spec = function_param_spec(
+        entry.func, skip=catalog.skip_names(), overrides=entry.defaults
+    )
     names = [n for n, _ in spec]
     assert not set(names) & catalog.skip_names()
     for key in entry.choices:
@@ -198,10 +234,15 @@ def test_every_plot_renders(ms_controller, entry):
     from ms_music.gui.components import render_figure_png
 
     c = ms_controller
+    if catalog.STEREO in entry.needs:
+        c.sonify(mobility={"pan": 1.0})
     c.keep_snapshot("other")
     labels = [CURRENT, "other"]
-    params = dict(function_param_spec(entry.func, skip=catalog.skip_names(),
-                                      overrides=entry.defaults))
+    params = dict(
+        function_param_spec(
+            entry.func, skip=catalog.skip_names(), overrides=entry.defaults
+        )
+    )
     png = render_figure_png(c.render_plot(entry, params, labels), dpi=40)
     assert png[:4] == b"\x89PNG"
     plt.close("all")
@@ -209,17 +250,24 @@ def test_every_plot_renders(ms_controller, entry):
 
 def test_unmet_needs():
     plot = catalog.find(catalog.PLOTS, "Difference spectrogram")
-    assert catalog.unmet_need(plot, has_audio=True, has_ms_data=True,
-                              n_versions=3)
-    assert catalog.unmet_need(plot, has_audio=True, has_ms_data=True,
-                              n_versions=2) is None
+    assert catalog.unmet_need(
+        plot, has_audio=True, has_ms_data=True, n_versions=3
+    )
+    assert (
+        catalog.unmet_need(
+            plot, has_audio=True, has_ms_data=True, n_versions=2
+        )
+        is None
+    )
     mapping = catalog.find(catalog.PLOTS, "m/z → frequency mapping")
-    assert "mzML" in catalog.unmet_need(mapping, has_audio=True,
-                                        has_ms_data=False, n_versions=0)
+    assert "mzML" in catalog.unmet_need(
+        mapping, has_audio=True, has_ms_data=False, n_versions=0
+    )
 
 
-needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None,
-                                  reason="ffmpeg not installed")
+needs_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None, reason="ffmpeg not installed"
+)
 
 
 @needs_ffmpeg
@@ -228,8 +276,12 @@ def test_video_render_reports_progress(ms_controller, tmp_path):
     c.sonifier.current_audio_data = c.current_audio()[:8000]  # 1 s
     entry = catalog.find(catalog.VIDEOS, "Spectrogram & waveform playback")
     calls = []
-    out = c.render_video(entry, {"fps": 5, "dpi": 40}, str(tmp_path / "v.mp4"),
-                         progress=lambda i, n: calls.append((i, n)))
+    out = c.render_video(
+        entry,
+        {"fps": 5, "dpi": 40},
+        str(tmp_path / "v.mp4"),
+        progress=lambda i, n: calls.append((i, n)),
+    )
     assert os.path.getsize(out) > 0
     assert calls and calls[-1][1] == 5
 
@@ -239,5 +291,59 @@ def test_video_render_can_be_cancelled(ms_controller, tmp_path):
     c = ms_controller
     entry = catalog.find(catalog.VIDEOS, "3D spectrum waterfall")
     with pytest.raises(RenderCancelled):
-        c.render_video(entry, {"fps": 5, "dpi": 40, "duration_seconds": 4},
-                       str(tmp_path / "v.mp4"), cancelled=lambda: True)
+        c.render_video(
+            entry,
+            {"fps": 5, "dpi": 40, "duration_seconds": 4},
+            str(tmp_path / "v.mp4"),
+            cancelled=lambda: True,
+        )
+
+
+def test_ms2_capabilities_and_mobility_flags(ms_controller):
+    c = ms_controller
+    assert c.has_mobility()
+    caps = c.ms2_capabilities()
+    assert not caps["dda"] and "MS level 2" in caps["dda_reason"]
+    c.sonifier.ms_level = 2
+    c.sonifier.isolation_window_list = [(499.0, 502.0)] * 30
+    caps = c.ms2_capabilities()
+    assert caps["dda"] and not caps["dia"]
+    assert "MS1 reference" in caps["dia_reason"]
+
+
+def test_brightness_through_controller(ms_controller):
+    c = ms_controller
+    msg = c.sonify(mobility={"brightness": 0.8, "pan": 1.0})
+    assert "Generated" in msg and np.isfinite(c.current_audio()).all()
+
+
+def test_stereo_field_rejects_mono_and_needs_gate(ms_controller):
+    from ms_music import visualizations as viz
+
+    with pytest.raises(ValueError, match="stereo"):
+        viz.plot_stereo_field(np.zeros(1000), 8000)
+    entry = catalog.find(catalog.PLOTS, "Stereo field")
+    assert "stereo" in catalog.unmet_need(
+        entry, has_audio=True, has_ms_data=True, n_versions=1
+    )
+
+
+@needs_ffmpeg
+def test_spatial_stage_video(ms_controller, tmp_path):
+    c = ms_controller
+    c.sonify(
+        mobility={
+            "pan": 1.0,
+            "effects": [("reverb", "dry_wet_mix", 0.05, 0.6)],
+        }
+    )
+    c.sonifier.current_audio_data = c.current_audio()[:, :8000]  # 1 s
+    entry = catalog.find(catalog.VIDEOS, "Spatial stage")
+    calls = []
+    out = c.render_video(
+        entry,
+        {"fps": 5, "dpi": 40},
+        str(tmp_path / "s.mp4"),
+        progress=lambda i, n: calls.append((i, n)),
+    )
+    assert os.path.getsize(out) > 0 and calls[-1][1] == 5
