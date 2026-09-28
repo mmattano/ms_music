@@ -515,7 +515,9 @@ def apply_chorus(
         voice_rate = rate_hz * (0.8 + 0.4 * voice / num_voices)
 
         lfo = depth_samples * np.sin(TAU * voice_rate * t + phase_offset)
-        read_pos = indices - delay_samples_base - lfo  # fractional read positions
+        read_pos = (
+            indices - delay_samples_base - lfo
+        )  # fractional read positions
 
         # Clamp to valid range
         read_pos = np.clip(read_pos, 0.0, n - 1.0)
@@ -525,17 +527,17 @@ def apply_chorus(
         frac = read_pos - idx_floor
         idx_ceil = np.minimum(idx_floor + 1, n - 1)
 
-        voice_output = (
-            (1.0 - frac) * audio_float[idx_floor]
-            + frac * audio_float[idx_ceil]
-        )
+        voice_output = (1.0 - frac) * audio_float[
+            idx_floor
+        ] + frac * audio_float[idx_ceil]
         # Zero out samples where the read position hasn't started yet
         voice_output[read_pos < 0] = 0.0
 
         wet_signal += voice_output / num_voices
 
-    return _apply_dry_wet_mix(audio_float, wet_signal.astype(np.float32),
-                              dry_wet_mix)
+    return _apply_dry_wet_mix(
+        audio_float, wet_signal.astype(np.float32), dry_wet_mix
+    )
 
 
 def apply_flanger(
@@ -617,9 +619,9 @@ def apply_flanger(
             past_idx2 = i - delay_idx - 1
 
             if past_idx >= 0 and past_idx2 >= 0:
-                delayed_sample = (
-                    (1 - frac) * buffer[past_idx] + frac * buffer[past_idx2]
-                )
+                delayed_sample = (1 - frac) * buffer[past_idx] + frac * buffer[
+                    past_idx2
+                ]
             elif past_idx >= 0:
                 delayed_sample = buffer[past_idx]
             else:
@@ -1135,7 +1137,8 @@ def apply_vibrato(
 
     # For a sinusoidal delay d(t) = A*sin(omega*t), the instantaneous
     # playback-rate deviation is  d/dt(d) = A*omega*cos(omega*t).
-    # To achieve a max pitch-ratio of depth_ratio we need A*omega = depth_ratio,
+    # To achieve a max pitch-ratio of depth_ratio we need 
+    # A*omega = depth_ratio,
     # so  A = depth_ratio / omega  (in samples).
     omega_samp = TAU * rate_hz / sample_rate
     A_samples = depth_ratio / omega_samp if omega_samp > 0 else 0.0
@@ -1150,9 +1153,9 @@ def apply_vibrato(
         idx = int(read_pos)
         frac = read_pos - idx
         if idx + 1 < n:
-            output[i] = (
-                (1.0 - frac) * audio_float[idx] + frac * audio_float[idx + 1]
-            )
+            output[i] = (1.0 - frac) * audio_float[idx] + frac * audio_float[
+                idx + 1
+            ]
         else:
             output[i] = audio_float[idx]
 
@@ -1295,7 +1298,7 @@ def apply_spectral_gate(
     audio_data: np.ndarray,
     sample_rate: int,
     threshold_db: float = -30.0,
-    n_fft: int = 2048
+    n_fft: int = 2048,
 ) -> np.ndarray:
     """
     Spectral gating - remove spectral components below threshold.
@@ -1386,10 +1389,8 @@ def apply_pitch_shift(
 
 
 def apply_time_stretch(
-        audio_data: np.ndarray,
-        sample_rate: int,
-        rate: float
-        ) -> np.ndarray:
+    audio_data: np.ndarray, sample_rate: int, rate: float
+) -> np.ndarray:
     """Time stretching using phase vocoder."""
     audio_float = _validate_audio_input(audio_data, "Time Stretch")
     if audio_float.size == 0:
@@ -1668,7 +1669,7 @@ def apply_granular_synthesis(
             )
             grain = librosa.effects.pitch_shift(
                 grain, sr=sample_rate, n_steps=pitch_shift
-                )
+            )
 
         # Apply window and add to output
         windowed_grain = grain * grain_window
@@ -2013,8 +2014,10 @@ def apply_shelving_eq(
 
 # Utility effects
 def apply_normalize(
-    audio_data: np.ndarray, sample_rate: int, target_db: float = -3.0,
-    mode: str = "peak"
+    audio_data: np.ndarray,
+    sample_rate: int,
+    target_db: float = -3.0,
+    mode: str = "peak",
 ) -> np.ndarray:
     """
     Normalize audio to target level.

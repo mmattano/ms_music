@@ -115,7 +115,8 @@ class MSPeakDetector:
         """
         # Always start with raw peak detection
         raw_peaks = self._detect_raw_peaks(
-            processed_spectra_dfs, max_intensity_overall)
+            processed_spectra_dfs, max_intensity_overall
+        )
 
         if not apply_clustering or not raw_peaks:
             return raw_peaks
@@ -162,9 +163,14 @@ class MSPeakDetector:
 
                 # Require each peak to be a local maximum with enough
                 # prominence to stand above local baseline noise.
-                min_prominence = max(intensity_threshold * 0.05,
-                                     np.median(int_arr[int_arr > 0]) * 0.1
-                                     if np.any(int_arr > 0) else 0.0)
+                min_prominence = max(
+                    intensity_threshold * 0.05,
+                    (
+                        np.median(int_arr[int_arr > 0]) * 0.1
+                        if np.any(int_arr > 0)
+                        else 0.0
+                    ),
+                )
                 peak_indices, _ = scipy_signal.find_peaks(
                     dense,
                     height=intensity_threshold,
@@ -256,21 +262,17 @@ class MSPeakDetector:
 
             consolidated_mz = np.average(mz_values, weights=weights)
             consolidated_intensity = np.sum(intensities)  # Sum all intensities
-            consolidated_retention_time = np.average(
-                retention_times, weights=weights)
 
         elif self.consolidation_method == "max_intensity":
             # Use peak with maximum intensity as base
             max_idx = np.argmax(intensities)
             consolidated_mz = mz_values[max_idx]
             consolidated_intensity = np.sum(intensities)
-            consolidated_retention_time = retention_times[max_idx]
 
         elif self.consolidation_method == "median":
             # Use median values
             consolidated_mz = np.median(mz_values)
             consolidated_intensity = np.sum(intensities)
-            consolidated_retention_time = np.median(retention_times)
 
         else:
             # Default to weighted average
@@ -281,8 +283,6 @@ class MSPeakDetector:
                 weights = np.ones(len(intensities)) / len(intensities)
             consolidated_mz = np.average(mz_values, weights=weights)
             consolidated_intensity = np.sum(intensities)
-            consolidated_retention_time = np.average(
-                retention_times, weights=weights)
 
         # Use the earliest scan as start time and span as peak width so the
         # MIDI note begins when the chromatographic peak first appears and
@@ -290,28 +290,33 @@ class MSPeakDetector:
         min_scan = int(min(scan_indices))
         max_scan = int(max(scan_indices))
         start_retention_time = float(min(retention_times))
-        chrom_width_scans = max(max_scan - min_scan + 1,
-                                int(np.mean(peak_widths)))
+        chrom_width_scans = max(
+            max_scan - min_scan + 1, int(np.mean(peak_widths))
+        )
 
         # Create consolidated peak
         consolidated_peak = {
             "mz": float(consolidated_mz),
             "intensity": float(consolidated_intensity),
             "normalized_intensity": float(
-                consolidated_intensity / max(intensities)),
+                consolidated_intensity / max(intensities)
+            ),
             "retention_time": start_retention_time,
             "scan_index": min_scan,
             "peak_width_scans": chrom_width_scans,
             "cluster_size": len(cluster_peaks),
             "mz_range": (float(min(mz_values)), float(max(mz_values))),
             "intensity_range": (
-                float(min(intensities)), float(max(intensities))),
+                float(min(intensities)),
+                float(max(intensities)),
+            ),
         }
 
         return consolidated_peak
 
     def _estimate_peak_width(
-            self, mz_value, center_scan, processed_spectra_dfs):
+        self, mz_value, center_scan, processed_spectra_dfs
+    ):
         width = 1
 
         # Look backward
@@ -326,8 +331,9 @@ class MSPeakDetector:
                 break
 
         # Look forward
-        for i in range(center_scan + 1, min(len(
-                processed_spectra_dfs), center_scan + 10)):
+        for i in range(
+            center_scan + 1, min(len(processed_spectra_dfs), center_scan + 10)
+        ):
             if (
                 i < len(processed_spectra_dfs)
                 and not processed_spectra_dfs[i].empty
@@ -398,34 +404,68 @@ class MSSonifierMidi:
         if enable_mz_clustering:
             tolerance_str = (
                 f"{mz_tolerance_ppm} ppm"
-                if use_ppm_tolerance else f"{mz_tolerance_da} Da"
+                if use_ppm_tolerance
+                else f"{mz_tolerance_da} Da"
             )
             print(f"m/z peak clustering enabled: {tolerance_str} tolerance")
 
-    def load_and_analyze_data(self, total_duration_seconds: float = 60.0):
+    def load_and_analyze_data(
+        self,
+        total_duration_seconds: float = 60.0,
+        ms_level: int = 1,
+        rt_range=None,
+        mobility_range=None,
+        cache: bool = True,
+    ):
         """
         Load MS data and analyze for MIDI generation.
 
+        Streams and bins the file (see :func:`ms_music.io.load_spectra`), so
+        large runs fit in memory.
+
         Args:
             total_duration_seconds: Target duration for the MIDI file
+            ms_level: MS level to use (1 or 2)
+            rt_range: Optional (start, end) retention time window, minutes
+            mobility_range: Optional (low, high) ion mobility window
+            cache: Reuse a binned copy from an earlier load
         """
-        # Load raw spectra
-        raw_spectra = io.load_mzml_data(self.filepath, ms_level=1)
-        if not raw_spectra:
+        run = io.load_spectra(
+            self.filepath,
+            ms_level=ms_level,
+            rt_range=rt_range,
+            mobility_range=mobility_range,
+            cache=cache,
+        )
+        if run is None:
             raise ValueError("No spectra found in the mzML file")
+        self.load_processed(
+            run.spectra,
+            run.max_intensity,
+            run.min_mz,
+            run.max_mz,
+            total_duration_seconds,
+        )
 
-        # Preprocess spectra
-        (
-            self.processed_spectra_dfs,
-            self.max_intensity_overall,
-            self.min_mz_overall,
-            self.max_mz_overall,
-        ) = io.preprocess_spectra(raw_spectra)
-
-        if not self.processed_spectra_dfs:
+    def load_processed(
+        self,
+        processed_spectra_dfs,
+        max_intensity_overall,
+        min_mz_overall,
+        max_mz_overall,
+        total_duration_seconds: float = 60.0,
+    ):
+        """
+        Use spectra that are already loaded and binned (e.g. an
+        ``MSSonifier``'s ``processed_spectra_dfs``) instead of reading the
+        file again.
+        """
+        if not processed_spectra_dfs:
             raise ValueError("No processable spectra found")
-
-        # Store timing information
+        self.processed_spectra_dfs = processed_spectra_dfs
+        self.max_intensity_overall = float(max_intensity_overall)
+        self.min_mz_overall = float(min_mz_overall)
+        self.max_mz_overall = float(max_mz_overall)
         self.total_duration_seconds = total_duration_seconds
 
     def setup_musical_system(
@@ -522,8 +562,9 @@ class MSSonifierMidi:
             raise ValueError("Must setup musical system first")
 
         # Configure peak detector with current or override parameters
-        self.peak_detector.intensity_threshold_percentile = \
+        self.peak_detector.intensity_threshold_percentile = (
             intensity_threshold_percentile
+        )
         self.peak_detector.max_peaks_per_scan = max_peaks_per_scan
 
         # Use override parameters or instance defaults
@@ -547,7 +588,7 @@ class MSSonifierMidi:
         self.detected_peaks = self.peak_detector._detect_peaks(
             self.processed_spectra_dfs,
             self.max_intensity_overall,
-            apply_clustering=should_cluster
+            apply_clustering=should_cluster,
         )
 
         # Convert peaks to quantized musical notes
@@ -561,8 +602,10 @@ class MSSonifierMidi:
         for peak in tqdm(self.detected_peaks, desc="Quantizing notes"):
             # Map m/z to continuous frequency
             continuous_freq = self._map_mz_to_frequency(
-                peak["mz"], frequency_mapping,
-                self.min_mz_overall, self.max_mz_overall,
+                peak["mz"],
+                frequency_mapping,
+                self.min_mz_overall,
+                self.max_mz_overall,
             )
 
             # Convert retention time to MIDI ticks
@@ -594,9 +637,7 @@ class MSSonifierMidi:
                     np.clip(note_info.get("midi_note", 60), 0, 127)
                 ),
                 velocity=int(
-                    np.clip(
-                        20 + peak["normalized_intensity"] * 107, 20, 127
-                    )
+                    np.clip(20 + peak["normalized_intensity"] * 107, 20, 127)
                 ),
                 channel=0,
                 original_mz=peak["mz"],
@@ -614,8 +655,10 @@ class MSSonifierMidi:
             self.quantized_notes = self._deduplicate_by_frequency(
                 self.quantized_notes, frequency_tolerance_hz
             )
-            print(f"Frequency deduplication: {original_count} "
-                  f"-> {len(self.quantized_notes)} notes")
+            print(
+                f"Frequency deduplication: {original_count} "
+                f"-> {len(self.quantized_notes)} notes"
+            )
 
         # Sort notes by start time
         self.quantized_notes.sort(key=lambda n: n.start_time)
@@ -681,8 +724,11 @@ class MSSonifierMidi:
         return base_note
 
     def _map_mz_to_frequency(
-        self, mz_value: float, mapping_method: str,
-        min_mz_overall: float, max_mz_overall: float
+        self,
+        mz_value: float,
+        mapping_method: str,
+        min_mz_overall: float,
+        max_mz_overall: float,
     ) -> float:
         """Map m/z value to frequency using specified method."""
         if mapping_method == "inverse_log":
@@ -690,38 +736,43 @@ class MSSonifierMidi:
                 mz_value,
                 self.note_quantizer.freq_range,
                 min_mz_overall,
-                max_mz_overall
+                max_mz_overall,
             )
         elif mapping_method == "power_law":
             return mz_to_frequency_power_law(
                 mz_value,
                 self.note_quantizer.freq_range,
                 min_mz_overall,
-                max_mz_overall
+                max_mz_overall,
             )
         elif mapping_method == "musical_octaves":
             return mz_to_frequency_musical_octaves(
-                mz_value, min_mz_overall,
+                mz_value,
+                min_mz_overall,
                 max_mz_overall,
-                base_freq=440.0, num_octaves=4
+                base_freq=440.0,
+                num_octaves=4,
             )
         elif mapping_method == "chromatic":
             return mz_to_frequency_chromatic(
                 mz_value,
                 min_mz_overall,
                 max_mz_overall,
-                base_freq=261.63, num_semitones=48
+                base_freq=261.63,
+                num_semitones=48,
             )
         elif mapping_method == "linear":
             return mz_to_frequency_linear(
-                mz_value, self.note_quantizer.freq_range,
+                mz_value,
+                self.note_quantizer.freq_range,
                 min_mz_overall,
-                max_mz_overall
+                max_mz_overall,
             )
         else:
             raise ValueError(
                 f"Unknown frequency_mapping '{mapping_method}'. Expected one "
-                "of: inverse_log, power_law, musical_octaves, chromatic, linear."
+                "of: inverse_log, power_law, musical_octaves, "
+                "chromatic, linear."
             )
 
     def generate_midi_file(
@@ -762,22 +813,26 @@ class MSSonifierMidi:
             voice_notes = self._separate_voices(num_voices)
         else:
             voice_notes = [self.quantized_notes]
-        
+
         # Save as separate files if requested
         if separate_files and num_voices > 1:
-            base_path = output_path.rsplit('.mid', 1)[0]
-            
+            base_path = output_path.rsplit(".mid", 1)[0]
+
             for voice_idx, notes in enumerate(voice_notes):
                 if not notes:  # Skip empty voices
                     continue
-                    
+
                 voice_path = f"{base_path}_voice{voice_idx + 1}.mid"
-                mid = MidiFile(ticks_per_beat=self.metrical_quantizer.ticks_per_beat)
+                mid = MidiFile(
+                    ticks_per_beat=self.metrical_quantizer.ticks_per_beat
+                )
                 track = MidiTrack()
                 mid.tracks.append(track)
-                
+
                 voice_name = f"{track_name} V{voice_idx + 1}"
-                track.append(MetaMessage("track_name", name=voice_name, time=0))
+                track.append(
+                    MetaMessage("track_name", name=voice_name, time=0)
+                )
                 track.append(
                     MetaMessage(
                         "set_tempo",
@@ -785,24 +840,37 @@ class MSSonifierMidi:
                         time=0,
                     )
                 )
-                track.append(Message("program_change", program=instrument - 1, channel=0, time=0))
-                
-                self._write_track_notes(track, notes, max_simultaneous_notes, 0)
+                track.append(
+                    Message(
+                        "program_change",
+                        program=instrument - 1,
+                        channel=0,
+                        time=0,
+                    )
+                )
+
+                self._write_track_notes(
+                    track, notes, max_simultaneous_notes, 0
+                )
                 mid.save(voice_path)
-            
+
             print(f"Saved {len(voice_notes)} voice files")
             return True
-        
+
         # Save as single file with multiple tracks
         mid = MidiFile(ticks_per_beat=self.metrical_quantizer.ticks_per_beat)
-        
+
         # Create track for each voice
         for voice_idx, notes in enumerate(voice_notes):
             track = MidiTrack()
             mid.tracks.append(track)
-            
+
             # Add track metadata
-            voice_name = f"{track_name} V{voice_idx + 1}" if num_voices > 1 else track_name
+            voice_name = (
+                f"{track_name} V{voice_idx + 1}"
+                if num_voices > 1
+                else track_name
+            )
             track.append(MetaMessage("track_name", name=voice_name, time=0))
             track.append(
                 MetaMessage(
@@ -811,11 +879,20 @@ class MSSonifierMidi:
                     time=0,
                 )
             )
-            
+
             # Add program change
-            track.append(Message("program_change", program=instrument - 1, channel=voice_idx, time=0))
-            
-            self._write_track_notes(track, notes, max_simultaneous_notes, voice_idx)
+            track.append(
+                Message(
+                    "program_change",
+                    program=instrument - 1,
+                    channel=voice_idx,
+                    time=0,
+                )
+            )
+
+            self._write_track_notes(
+                track, notes, max_simultaneous_notes, voice_idx
+            )
 
         # Save MIDI file
         mid.save(output_path)
@@ -831,26 +908,28 @@ class MSSonifierMidi:
         """Separate notes into voices by pitch range."""
         if not self.quantized_notes:
             return []
-        
+
         # Get pitch range
         pitches = [n.midi_number for n in self.quantized_notes]
         min_pitch = min(pitches)
         max_pitch = max(pitches)
         pitch_range = max_pitch - min_pitch
-        
+
         # Assign notes to voices by pitch
         voices = [[] for _ in range(num_voices)]
         for note in self.quantized_notes:
             # Determine voice based on pitch
             voice_idx = min(
                 int((note.midi_number - min_pitch) / pitch_range * num_voices),
-                num_voices - 1
+                num_voices - 1,
             )
             voices[voice_idx].append(note)
-        
+
         return voices
 
-    def _write_track_notes(self, track, notes, max_simultaneous_notes, channel):
+    def _write_track_notes(
+        self, track, notes, max_simultaneous_notes, channel
+    ):
         """Write notes to a MIDI track."""
         # Group notes by start time and limit simultaneous notes
         notes_by_time = {}
@@ -864,26 +943,32 @@ class MSSonifierMidi:
             notes_at_time = notes_by_time[start_time]
             if len(notes_at_time) > max_simultaneous_notes:
                 notes_at_time.sort(key=lambda n: n.velocity, reverse=True)
-                notes_by_time[start_time] = notes_at_time[:max_simultaneous_notes]
+                notes_by_time[start_time] = notes_at_time[
+                    :max_simultaneous_notes
+                ]
 
         # Create event list
         events = []
         for start_time, note_list in notes_by_time.items():
             for note in note_list:
-                events.append({
-                    "time": note.start_time,
-                    "type": "note_on",
-                    "note": note.midi_number,
-                    "velocity": note.velocity,
-                    "channel": channel,
-                })
-                events.append({
-                    "time": note.start_time + note.duration,
-                    "type": "note_off",
-                    "note": note.midi_number,
-                    "velocity": 0,
-                    "channel": channel,
-                })
+                events.append(
+                    {
+                        "time": note.start_time,
+                        "type": "note_on",
+                        "note": note.midi_number,
+                        "velocity": note.velocity,
+                        "channel": channel,
+                    }
+                )
+                events.append(
+                    {
+                        "time": note.start_time + note.duration,
+                        "type": "note_off",
+                        "note": note.midi_number,
+                        "velocity": 0,
+                        "channel": channel,
+                    }
+                )
 
         # Sort events by time
         events.sort(key=lambda e: (e["time"], e["type"] == "note_off"))
@@ -892,7 +977,7 @@ class MSSonifierMidi:
         current_time = 0
         for event in events:
             delta_time = max(0, event["time"] - current_time)
-            
+
             if event["type"] == "note_on":
                 message = Message(
                     "note_on",
@@ -909,10 +994,10 @@ class MSSonifierMidi:
                     velocity=0,
                     time=delta_time,
                 )
-            
+
             track.append(message)
             current_time = event["time"]
-        
+
         # Add end of track
         track.append(MetaMessage("end_of_track", time=0))
 

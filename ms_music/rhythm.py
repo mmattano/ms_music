@@ -92,27 +92,32 @@ class RhythmConfig:
         if self.subdivision not in _SUBDIVISIONS:
             raise ValueError(
                 f"subdivision must be one of {_SUBDIVISIONS}, "
-                f"got {self.subdivision}.")
+                f"got {self.subdivision}."
+            )
         if self.subdivision < self.meter.note_value:
             raise ValueError(
                 f"subdivision {self.subdivision} is coarser than the "
                 f"meter's note value ({self.meter.beats_per_measure}/"
                 f"{self.meter.note_value}); use {self.meter.note_value} "
-                f"or finer.")
+                f"or finer."
+            )
         if not 0.0 < self.gate <= 1.0:
             raise ValueError(f"gate must be in (0, 1], got {self.gate}.")
         if not 0.0 <= self.note_threshold < 1.0:
             raise ValueError(
-                f"note_threshold must be in [0, 1), got {self.note_threshold}.")
+                f"note_threshold must be in [0, 1), got {self.note_threshold}."
+            )
         if self.accent < 0:
             raise ValueError(f"accent must be >= 0, got {self.accent}.")
         if not 0.5 <= self.swing_ratio < 1.0:
             raise ValueError(
-                f"swing_ratio must be in [0.5, 1), got {self.swing_ratio}.")
+                f"swing_ratio must be in [0.5, 1), got {self.swing_ratio}."
+            )
         if self.aggregate not in _AGGREGATES:
             raise ValueError(
                 f"aggregate must be one of {_AGGREGATES}, "
-                f"got {self.aggregate!r}.")
+                f"got {self.aggregate!r}."
+            )
 
     @classmethod
     def coerce(cls, value) -> Optional["RhythmConfig"]:
@@ -123,7 +128,8 @@ class RhythmConfig:
             return cls(**value)
         raise TypeError(
             f"rhythm must be a RhythmConfig, a dict or None, "
-            f"got {type(value).__name__}.")
+            f"got {type(value).__name__}."
+        )
 
     @property
     def quarter_seconds(self) -> float:
@@ -132,7 +138,9 @@ class RhythmConfig:
     @property
     def bar_seconds(self) -> float:
         m = self.meter
-        return m.beats_per_measure * (4.0 / m.note_value) * self.quarter_seconds
+        return (
+            m.beats_per_measure * (4.0 / m.note_value) * self.quarter_seconds
+        )
 
     @property
     def steps_per_bar(self) -> int:
@@ -141,8 +149,7 @@ class RhythmConfig:
 
     def describe(self) -> str:
         m = self.meter
-        return (f"{m.beats_per_measure}/{m.note_value} · "
-                f"{self.tempo:g} BPM")
+        return f"{m.beats_per_measure}/{m.note_value} · " f"{self.tempo:g} BPM"
 
 
 @dataclass
@@ -227,33 +234,43 @@ def build_grid(duration_seconds: float, config: RhythmConfig) -> RhythmGrid:
 
 
 def resample_spectra(
-    spectra_dfs: List[pd.DataFrame], n_steps: int, aggregate: str = "max",
-) -> Tuple[List[pd.DataFrame], List[int]]:
-    """Regroup per-scan spectra into ``n_steps`` grid steps.
+    spectra_dfs: List[pd.DataFrame],
+    n_steps: int,
+    aggregate: str = "max",
+    return_members: bool = False,
+):
+    """Regroup per-scan spectra into ``n_steps`` consecutive steps.
 
-    Returns ``(step_dfs, step_to_scan)``. With more scans than steps, the
-    scans inside each step are combined per m/z with ``aggregate``; with
-    fewer, each step holds the nearest scan. ``step_to_scan[k]`` is the scan
-    that represents step ``k`` (used for per-scan metadata such as MS2
-    precursors).
+    Returns ``(step_dfs, step_to_scan)``, plus ``members`` (the scan indices
+    of each step) when ``return_members`` is set. With more scans than
+    steps, the scans inside each step are combined per m/z with
+    ``aggregate``; with fewer, each step holds the nearest scan.
+    ``step_to_scan[k]`` is the scan that represents step ``k``. A
+    ``mobility`` column is combined as the intensity-weighted mean.
     """
     n_scans = len(spectra_dfs)
     if n_scans == 0 or n_steps <= 0:
-        return [], []
+        return ([], [], []) if return_members else ([], [])
 
-    # Scan i belongs to step floor(i * n_steps / n_scans).
+    # Scan i belongs to step floor(i * n_steps / n_scans); owners are sorted,
+    # so each step's scans are one contiguous range.
     owner = (np.arange(n_scans) * n_steps) // n_scans
+    starts = np.searchsorted(owner, np.arange(n_steps), side="left")
+    ends = np.searchsorted(owner, np.arange(n_steps), side="right")
     step_dfs: List[pd.DataFrame] = []
     step_to_scan: List[int] = []
+    members_out: List[np.ndarray] = []
     for k in range(n_steps):
-        members = np.nonzero(owner == k)[0]
+        members = np.arange(starts[k], ends[k])
         if members.size == 0:
             # Fewer scans than steps: hold the scan whose span covers k.
             nearest = min(int((k + 0.5) * n_scans / n_steps), n_scans - 1)
             step_dfs.append(spectra_dfs[nearest])
             step_to_scan.append(nearest)
+            members_out.append(np.array([nearest]))
             continue
         step_to_scan.append(int(members[members.size // 2]))
+        members_out.append(members)
         if members.size == 1:
             step_dfs.append(spectra_dfs[members[0]])
             continue
@@ -261,14 +278,35 @@ def resample_spectra(
         if not parts:
             step_dfs.append(spectra_dfs[members[0]])
             continue
-        combined = pd.concat(parts)["intensities"]
-        grouped = combined.groupby(level=0)
-        agg = getattr(grouped, aggregate)()
-        step_dfs.append(agg.to_frame("intensities"))
+        step_dfs.append(_combine(parts, aggregate))
+    if return_members:
+        return step_dfs, step_to_scan, members_out
     return step_dfs, step_to_scan
 
 
-def find_notes(levels: np.ndarray, threshold: float = 0.05) -> List[Tuple[int, int]]:
+def _combine(parts: List[pd.DataFrame], aggregate: str) -> pd.DataFrame:
+    combined = pd.concat(parts)
+    grouped = combined["intensities"].groupby(level=0)
+    out = getattr(grouped, aggregate)().to_frame("intensities")
+    if "mobility" in combined.columns:
+        weight = combined["intensities"].to_numpy()
+        weighted = (
+            pd.Series(
+                combined["mobility"].to_numpy() * weight, index=combined.index
+            )
+            .groupby(level=0)
+            .sum()
+        )
+        total = pd.Series(weight, index=combined.index).groupby(level=0).sum()
+        out["mobility"] = (weighted / total.where(total > 0)).reindex(
+            out.index
+        )
+    return out
+
+
+def find_notes(
+    levels: np.ndarray, threshold: float = 0.05
+) -> List[Tuple[int, int]]:
     """Split one pitch's per-step levels into notes.
 
     A note is a run of consecutive steps whose level is above
@@ -291,13 +329,16 @@ def note_span(grid: RhythmGrid, start: int, end: int) -> Tuple[float, float]:
     only its last step is shortened by ``gate``."""
     last = end - 1
     t0 = float(grid.onsets[start])
-    t1 = float(grid.onsets[last]
-               + grid.config.gate * (grid.step_ends[last] - grid.onsets[last]))
+    t1 = float(
+        grid.onsets[last]
+        + grid.config.gate * (grid.step_ends[last] - grid.onsets[last])
+    )
     return t0, t1
 
 
-def note_gain(grid: RhythmGrid, levels: np.ndarray, start: int, end: int,
-              t: np.ndarray) -> np.ndarray:
+def note_gain(
+    grid: RhythmGrid, levels: np.ndarray, start: int, end: int, t: np.ndarray
+) -> np.ndarray:
     """Gain curve over sample times ``t`` for one gradient-style note.
 
     The level glides between step centres (no steps, no re-attacks), with a
@@ -313,7 +354,6 @@ def note_gain(grid: RhythmGrid, levels: np.ndarray, start: int, end: int,
     mids = (grid.onsets[steps] + grid.step_ends[steps]) / 2
     vals = np.asarray(levels, dtype=float)[steps] * accent
     inside = (mids > t0 + attack) & (mids < t1 - release)
-    xs = np.concatenate(([t0, t0 + attack], mids[inside],
-                         [t1 - release, t1]))
+    xs = np.concatenate(([t0, t0 + attack], mids[inside], [t1 - release, t1]))
     ys = np.concatenate(([0.0, vals[0]], vals[inside], [vals[-1], 0.0]))
     return np.interp(t, xs, ys, left=0.0, right=0.0)

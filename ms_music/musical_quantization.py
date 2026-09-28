@@ -145,8 +145,8 @@ class MetricalQuantizer:
         # Define available note lengths (short → long so quantize_duration
         # can also handle wide chromatographic peaks spanning many bars)
         self.note_lengths = [
-            NoteLength("4-bar",   16.0, ticks_per_beat),
-            NoteLength("2-bar",    8.0, ticks_per_beat),
+            NoteLength("4-bar", 16.0, ticks_per_beat),
+            NoteLength("2-bar", 8.0, ticks_per_beat),
             NoteLength.whole_note(ticks_per_beat),
             NoteLength.half_note(ticks_per_beat),
             NoteLength.dotted_quarter(ticks_per_beat),
@@ -194,9 +194,8 @@ class MetricalQuantizer:
         return sorted(list(set(grid_positions)))
 
     def quantize_onset_time(
-            self,
-            time_ticks: int,
-            measure_offset: int = 0) -> int:
+        self, time_ticks: int, measure_offset: int = 0
+    ) -> int:
         """
         Quantize an onset time to the nearest grid position.
 
@@ -253,8 +252,10 @@ class MetricalQuantizer:
         return max(0, int(round(quantized_time)))
 
     def quantize_duration(
-        self, duration_ticks: int, intensity: float = 0.5,
-        peak_width_seconds: float = None
+        self,
+        duration_ticks: int,
+        intensity: float = 0.5,
+        peak_width_seconds: float = None,
     ) -> int:
         """
         Quantize note duration based primarily on peak width.
@@ -909,8 +910,9 @@ class MusicalNoteQuantizer:
         return note_info
 
 
-def mz_to_frequency_inverse_log(mz_value, freq_range, min_mz_overall,
-                                max_mz_overall):
+def mz_to_frequency_inverse_log(
+    mz_value, freq_range, min_mz_overall, max_mz_overall
+):
     """Maps m/z values to frequencies using inverse logarithmic scaling."""
     if mz_value <= 0 or min_mz_overall <= 0:
         return freq_range[0]
@@ -926,8 +928,9 @@ def mz_to_frequency_inverse_log(mz_value, freq_range, min_mz_overall,
     return frequency
 
 
-def mz_to_frequency_power_law(mz_value, freq_range, min_mz_overall,
-                              max_mz_overall, exponent=1.5):
+def mz_to_frequency_power_law(
+    mz_value, freq_range, min_mz_overall, max_mz_overall, exponent=1.5
+):
     """Maps m/z values using a power law relationship."""
     if mz_value <= 0:
         return freq_range[0]
@@ -968,8 +971,11 @@ def mz_to_frequency_musical_octaves(
 
 
 def mz_to_frequency_chromatic(
-    mz_value, min_mz_overall, max_mz_overall, base_freq=261.63,
-    num_semitones=48
+    mz_value,
+    min_mz_overall,
+    max_mz_overall,
+    base_freq=261.63,
+    num_semitones=48,
 ):
     """Maps m/z to frequencies using chromatic scale."""
     if mz_value <= 0:
@@ -987,8 +993,9 @@ def mz_to_frequency_chromatic(
     return frequency
 
 
-def mz_to_frequency_linear(mz_value, freq_range, min_mz_overall,
-                           max_mz_overall):
+def mz_to_frequency_linear(
+    mz_value, freq_range, min_mz_overall, max_mz_overall
+):
     """Maps m/z values to frequencies using linear scaling."""
     if mz_value <= 0:
         return freq_range[0]
