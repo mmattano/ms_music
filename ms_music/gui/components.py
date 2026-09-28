@@ -40,19 +40,28 @@ class LocalFilePicker(ui.dialog):
         with self, ui.card().classes("w-[40rem] max-w-full"):
             with ui.row().classes("w-full items-center no-wrap"):
                 ui.button(icon="arrow_upward", on_click=self._go_up).props(
-                    "flat round dense").tooltip("Parent folder")
-                ui.button(icon="home", on_click=lambda: self._go(Path.home())).props(
-                    "flat round dense").tooltip("Home")
+                    "flat round dense"
+                ).tooltip("Parent folder")
+                ui.button(
+                    icon="home", on_click=lambda: self._go(Path.home())
+                ).props("flat round dense").tooltip("Home")
                 self.path_label = ui.label().classes(
-                    "text-sm font-mono truncate grow")
-            self.listing = ui.list().props("dense separator").classes(
-                "w-full h-96 overflow-auto")
+                    "text-sm font-mono truncate grow"
+                )
+            self.listing = (
+                ui.list()
+                .props("dense separator")
+                .classes("w-full h-96 overflow-auto")
+            )
             with ui.row().classes("w-full items-center justify-between"):
                 ui.checkbox("Show hidden", on_change=self._toggle_hidden)
                 if self.extensions:
-                    ui.label("Showing: " + ", ".join(sorted(self.extensions))).classes(
-                        "text-xs text-grey")
-                ui.button("Cancel", on_click=lambda: self.submit(None)).props("flat")
+                    ui.label(
+                        "Showing: " + ", ".join(sorted(self.extensions))
+                    ).classes("text-xs text-grey")
+                ui.button("Cancel", on_click=lambda: self.submit(None)).props(
+                    "flat"
+                )
         self._refresh()
 
     def _toggle_hidden(self, e):
@@ -91,12 +100,17 @@ class LocalFilePicker(ui.dialog):
             for entry in entries:
                 is_dir = entry.is_dir()
                 target = Path(entry.path)
-                handler = (lambda p=target: self._go(p)) if is_dir else (
-                    lambda p=target: self.submit(str(p)))
+                handler = (
+                    (lambda p=target: self._go(p))
+                    if is_dir
+                    else (lambda p=target: self.submit(str(p)))
+                )
                 with ui.item(on_click=handler):
                     with ui.item_section().props("avatar"):
-                        ui.icon("folder" if is_dir else "description",
-                                color="primary" if is_dir else None)
+                        ui.icon(
+                            "folder" if is_dir else "description",
+                            color="primary" if is_dir else None,
+                        )
                     ui.item_section(entry.name)
 
 
@@ -114,8 +128,14 @@ class ParamForm(ui.column):
     never from a worker thread.
     """
 
-    def __init__(self, spec=None, *, choices=None, on_change=None,
-                 empty_text="No parameters."):
+    def __init__(
+        self,
+        spec=None,
+        *,
+        choices=None,
+        on_change=None,
+        empty_text="No parameters.",
+    ):
         super().__init__()
         self.classes("w-full gap-1")
         self._rows = {}
@@ -132,31 +152,39 @@ class ParamForm(ui.column):
             if not spec:
                 ui.label(self._empty_text).classes("text-grey")
                 return
-            with ui.grid(columns="repeat(auto-fill, minmax(14rem, 1fr))").classes(
-                    "w-full gap-x-4 gap-y-1 items-center"):
+            with ui.grid(
+                columns="repeat(auto-fill, minmax(14rem, 1fr))"
+            ).classes("w-full gap-x-4 gap-y-1 items-center"):
                 for name, default in spec:
                     label = name.replace("_", " ")
                     if name in choices:
                         options = list(choices[name])
                         if default is not None and default not in options:
                             options.insert(0, default)
-                        el = ui.select(options, value=default, label=label,
-                                       on_change=changed).props("dense")
+                        el = ui.select(
+                            options,
+                            value=default,
+                            label=label,
+                            on_change=changed,
+                        ).props("dense")
                         kind = "choice"
                     elif isinstance(default, bool):
                         el = ui.switch(label, value=default, on_change=changed)
                         kind = "bool"
                     elif isinstance(default, (int, float)):
-                        el = ui.number(label, value=default,
-                                       on_change=changed).props("dense")
+                        el = ui.number(
+                            label, value=default, on_change=changed
+                        ).props("dense")
                         kind = "int" if isinstance(default, int) else "float"
                     elif isinstance(default, str):
-                        el = ui.input(label, value=default,
-                                      on_change=changed).props("dense")
+                        el = ui.input(
+                            label, value=default, on_change=changed
+                        ).props("dense")
                         kind = "str"
                     else:
                         el = ui.input(
-                            label, value="" if default is None else repr(default),
+                            label,
+                            value="" if default is None else repr(default),
                             on_change=changed,
                         ).props("dense")
                         kind = "literal"
@@ -171,7 +199,9 @@ class ParamForm(ui.column):
                 if el.value is None:
                     out[name] = default
                 else:
-                    out[name] = int(el.value) if kind == "int" else float(el.value)
+                    out[name] = (
+                        int(el.value) if kind == "int" else float(el.value)
+                    )
             elif kind in ("choice", "str"):
                 out[name] = default if el.value in (None, "") else el.value
             else:
@@ -212,27 +242,35 @@ def waveform_svg(preview, bar_fractions=()):
     ``bar_fractions`` (0-1 positions) draw faint bar lines for metered audio.
     """
     if preview is None:
-        return ('<div class="w-full h-full flex items-center justify-center '
-                'text-sm text-grey">No audio yet</div>')
+        return (
+            '<div class="w-full h-full flex items-center justify-center '
+            'text-sm text-grey">No audio yet</div>'
+        )
     _times, lows, highs = preview
     n = len(highs)
     peak = float(max(abs(lows.min()), abs(highs.max()))) or 1.0
     xs = [1000.0 * i / max(n - 1, 1) for i in range(n)]
-    top = [f"{x:.1f},{50 - 48 * float(y) / peak:.1f}" for x, y in zip(xs, highs)]
-    bottom = [f"{x:.1f},{50 - 48 * float(y) / peak:.1f}"
-              for x, y in zip(reversed(xs), reversed(lows))]
+    top = [
+        f"{x:.1f},{50 - 48 * float(y) / peak:.1f}" for x, y in zip(xs, highs)
+    ]
+    bottom = [
+        f"{x:.1f},{50 - 48 * float(y) / peak:.1f}"
+        for x, y in zip(reversed(xs), reversed(lows))
+    ]
     bars = "".join(
         f'<line x1="{1000 * f:.1f}" y1="0" x2="{1000 * f:.1f}" y2="100" '
         'stroke="currentColor" stroke-opacity="0.3" stroke-width="1" '
         'stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>'
-        for f in bar_fractions if 0 < f < 1)
+        for f in bar_fractions
+        if 0 < f < 1
+    )
     return (
         '<svg viewBox="0 0 1000 100" preserveAspectRatio="none" '
         'class="w-full h-full" role="img" aria-label="Waveform">'
         '<line x1="0" y1="50" x2="1000" y2="50" stroke="currentColor" '
         'stroke-opacity="0.25" stroke-width="1" vector-effect="non-scaling-stroke"/>'
-        + bars +
-        f'<polygon points="{" ".join(top + bottom)}" fill="currentColor" '
+        + bars
+        + f'<polygon points="{" ".join(top + bottom)}" fill="currentColor" '
         'fill-opacity="0.55" stroke="currentColor" stroke-width="0.6" '
         'vector-effect="non-scaling-stroke"/></svg>'
     )

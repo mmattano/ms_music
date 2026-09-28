@@ -20,7 +20,15 @@ import shutil
 import socket
 import tempfile
 
-from fastapi import HTTPException, Response
+# Figures are rendered to PNG on worker threads, so pyplot must use the
+# non-interactive Agg backend. On macOS the default "MacOSX" backend needs
+# the main event loop and hangs when a worker thread calls plt.subplots.
+# Force Agg before anything imports pyplot.
+import matplotlib
+
+matplotlib.use("Agg")
+
+from fastapi import HTTPException, Response  # noqa: E402
 from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
@@ -54,6 +62,8 @@ class AppState:
 
 
 state = AppState()
+
+_FAVICON = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
 
 
 def _serve_file(path, media_type):
@@ -111,18 +121,54 @@ def build_ui():
             ui.icon("graphic_eq", size="md")
             ui.label("ms_music").classes("text-xl font-semibold")
             ui.label("Mass spectrometry sonification").classes(
-                "text-sm opacity-80 max-sm:hidden")
+                "text-sm opacity-80 max-sm:hidden"
+            )
         with ui.row().classes("items-center gap-1"):
             spinner = ui.spinner("audio", size="md", color="white")
             spinner.visible = False
             status = ui.label("Ready").classes("text-sm opacity-90 mr-2")
-            theme_btn = ui.button(on_click=lambda: cycle_theme()).props(
-                "flat round color=white").tooltip("Theme: auto / dark / light")
-            ui.button(icon="receipt_long", on_click=lambda: log_drawer.toggle()).props(
-                "flat round color=white").tooltip("Show log")
+            theme_btn = (
+                ui.button(on_click=lambda: cycle_theme())
+                .props("flat round color=white")
+                .tooltip("Theme: auto / dark / light")
+            )
+            ui.button(
+                icon="receipt_long", on_click=lambda: log_drawer.toggle()
+            ).props("flat round color=white").tooltip("Show log")
+            ui.button(
+                icon="power_settings_new", on_click=lambda: confirm_quit()
+            ).props("flat round color=white").tooltip("Quit ms_music")
+
+    async def confirm_quit():
+        with ui.dialog() as dialog, ui.card():
+            ui.label("Quit ms_music?").classes("text-base font-semibold")
+            ui.label(
+                "Unsaved audio, plots and videos are lost; downloaded "
+                "files and cached data stay."
+            ).classes("text-sm")
+            with ui.row().classes("w-full justify-end"):
+                ui.button(
+                    "Cancel", on_click=lambda: dialog.submit(False)
+                ).props("flat")
+                ui.button("Quit", on_click=lambda: dialog.submit(True)).props(
+                    "color=negative"
+                )
+        quit_now = await dialog
+        dialog.delete()
+        if quit_now:
+            ui.notify(
+                "ms_music has stopped. You can close this tab.",
+                type="info",
+                timeout=0,
+            )
+            ui.timer(0.5, app.shutdown, once=True)
 
     # Cycle auto (follow OS) -> dark -> light; the icon shows the mode.
-    theme_icons = {None: "brightness_auto", True: "dark_mode", False: "light_mode"}
+    theme_icons = {
+        None: "brightness_auto",
+        True: "dark_mode",
+        False: "light_mode",
+    }
 
     def cycle_theme():
         dark.value = {None: True, True: False, False: None}[dark.value]
@@ -137,36 +183,55 @@ def build_ui():
     # --------------------------------------------------------- player bar
     # Quasar marks dark mode with body--dark (Tailwind's dark: variant
     # doesn't see it), so theme the player bar with plain CSS.
-    ui.add_css("""
+    ui.add_css(
+        """
         .ms-player { background: #fff; color: #111; border-top: 1px solid #e5e7eb; }
         .body--dark .ms-player { background: #1d1d1d; color: #eee; border-color: #333; }
-    """)
+    """
+    )
     with ui.footer().classes("p-0 ms-player"):
         with ui.column().classes("w-full px-4 py-2 gap-1"):
             wave_view = ui.html(waveform_svg(None), sanitize=False).classes(
-                "w-full h-20 text-primary")
+                "w-full h-20 text-primary"
+            )
             with ui.row().classes("w-full items-center gap-3 no-wrap"):
                 player = ui.audio("").classes("grow h-10")
                 audio_info = ui.label("No audio loaded.").classes(
-                    "text-sm text-grey-7 whitespace-nowrap max-md:hidden")
+                    "text-sm text-grey-7 whitespace-nowrap max-md:hidden"
+                )
                 chain_row = ui.row().classes("gap-1 max-lg:hidden")
-                keep_btn = ui.button(icon="bookmark_add",
-                                     on_click=lambda: keep_version()).props(
-                    "flat round").tooltip("Keep this version for comparison")
-                download_wav = ui.button(icon="download",
-                                         on_click=lambda: _download_wav()).props(
-                    "flat round").tooltip("Download WAV")
+                keep_btn = (
+                    ui.button(
+                        icon="bookmark_add", on_click=lambda: keep_version()
+                    )
+                    .props("flat round")
+                    .tooltip("Keep this version for comparison")
+                )
+                download_wav = (
+                    ui.button(
+                        icon="download", on_click=lambda: _download_wav()
+                    )
+                    .props("flat round")
+                    .tooltip("Download WAV")
+                )
 
     def refresh_player():
         audio_ok = state.wav_path is not None
         duration = c.duration_seconds()
         grid = c.rhythm_grid()
-        bars = (grid.bar_times / duration) if grid is not None and duration else ()
+        bars = (
+            (grid.bar_times / duration)
+            if grid is not None and duration
+            else ()
+        )
         wave_view.content = waveform_svg(
-            state.preview if audio_ok else None, bar_fractions=bars)
+            state.preview if audio_ok else None, bar_fractions=bars
+        )
         if audio_ok:
             player.set_source(f"/ms_music/audio/{state.audio_version}.wav")
             info = f"{duration:.1f} s · {c.sample_rate} Hz"
+            if c.is_stereo():
+                info += " · stereo"
             if grid is not None:
                 info += f" · {grid.describe()}"
             audio_info.text = info
@@ -177,13 +242,17 @@ def build_ui():
         chain_row.clear()
         with chain_row:
             for label in c.chain_labels():
-                ui.chip(label, icon="tune").props("dense outline color=primary")
+                ui.chip(label, icon="tune").props(
+                    "dense outline color=primary"
+                )
 
     def _download_wav():
         if state.wav_path is None:
             ui.notify("Nothing to download yet.", type="warning")
             return
-        stem = os.path.splitext(os.path.basename(c.source_path or "ms_music"))[0]
+        stem = os.path.splitext(os.path.basename(c.source_path or "ms_music"))[
+            0
+        ]
         ui.download.file(state.wav_path, f"{stem}.wav")
 
     async def keep_version():
@@ -192,11 +261,17 @@ def build_ui():
             return
         with ui.dialog() as dialog, ui.card().classes("w-96"):
             ui.label("Keep this version for comparison").classes(
-                "text-base font-semibold")
-            name = ui.input("Name", value=c.default_snapshot_label()).classes(
-                "w-full").on("keydown.enter", lambda: dialog.submit(name.value))
+                "text-base font-semibold"
+            )
+            name = (
+                ui.input("Name", value=c.default_snapshot_label())
+                .classes("w-full")
+                .on("keydown.enter", lambda: dialog.submit(name.value))
+            )
             with ui.row().classes("w-full justify-end"):
-                ui.button("Cancel", on_click=lambda: dialog.submit(None)).props("flat")
+                ui.button(
+                    "Cancel", on_click=lambda: dialog.submit(None)
+                ).props("flat")
                 ui.button("Keep", on_click=lambda: dialog.submit(name.value))
         result = await dialog
         dialog.delete()
@@ -214,7 +289,8 @@ def build_ui():
         for b in action_buttons:
             b.enabled = not busy
         download_wav.enabled = keep_btn.enabled = (
-            (not busy) and state.wav_path is not None)
+            not busy
+        ) and state.wav_path is not None
 
     def write_log(text):
         log.push(text)
@@ -266,8 +342,13 @@ def build_ui():
             shell.audio_changed()
         return True, result
 
-    shell = pages.Shell(c=c, state=state, action=action, run_task=run_task,
-                        refresh_player=refresh_player)
+    shell = pages.Shell(
+        c=c,
+        state=state,
+        action=action,
+        run_task=run_task,
+        refresh_player=refresh_player,
+    )
 
     # --------------------------------------------------------------- pages
     page_list = [
@@ -278,13 +359,23 @@ def build_ui():
         ("Visualize", "insights", pages.visualize_page),
         ("Video", "movie", pages.video_page),
     ]
-    with ui.left_drawer(value=True, bordered=True).props("width=190").classes("p-0"):
-        with ui.tabs().props("vertical inline-label no-caps align=left").classes(
-                "w-full") as tabs:
+    with (
+        ui.left_drawer(value=True, bordered=True)
+        .props("width=190")
+        .classes("p-0")
+    ):
+        with (
+            ui.tabs()
+            .props("vertical inline-label no-caps align=left")
+            .classes("w-full") as tabs
+        ):
             tab_objs = [ui.tab(name, icon=icon) for name, icon, _ in page_list]
 
-    with ui.tab_panels(tabs, value=tab_objs[0]).props("animated=false").classes(
-            "w-full max-w-5xl mx-auto bg-transparent"):
+    with (
+        ui.tab_panels(tabs, value=tab_objs[0])
+        .props("animated=false")
+        .classes("w-full max-w-5xl mx-auto bg-transparent")
+    ):
         for tab, (_name, _icon, build) in zip(tab_objs, page_list):
             with ui.tab_panel(tab).classes("gap-4"):
                 build(shell)
@@ -294,8 +385,19 @@ def build_ui():
     set_busy(state.busy, status.text)
 
 
-def _free_port(preferred=8765):
-    for port in (preferred, 0):
+from . import DEFAULT_PORT, PORT_RANGE
+
+
+@app.get("/ms_music/ping")
+def _ping():
+    """Lets a second launch find this instance (and nothing else)."""
+    from .. import __version__
+
+    return {"app": "ms_music", "version": __version__}
+
+
+def _free_port(preferred=DEFAULT_PORT):
+    for port in (*PORT_RANGE, 0):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
                 s.bind(("127.0.0.1", port))
@@ -305,15 +407,71 @@ def _free_port(preferred=8765):
     return preferred
 
 
+def _quit_when_closed(grace_seconds=60.0, startup_seconds=120.0):
+    """Shut the server down once no browser tab has been connected for
+    ``grace_seconds`` (or none ever connected within ``startup_seconds``).
+    Never while a task is running."""
+    import asyncio
+    import time
+
+    from nicegui import Client
+
+    async def watch():
+        started = time.monotonic()
+        seen = False
+        idle_since = None
+        while True:
+            await asyncio.sleep(2.0)
+            connected = any(
+                client.has_socket_connection
+                for client in list(Client.instances.values())
+            )
+            now = time.monotonic()
+            if connected:
+                seen, idle_since = True, None
+                continue
+            if state.busy:
+                continue
+            idle_since = idle_since or now
+            limit = grace_seconds if seen else startup_seconds
+            if now - (started if not seen else idle_since) >= limit:
+                print("No ms_music tab open any more: shutting down.")
+                app.shutdown()
+                return
+
+    def start():
+        # Schedule without returning the task: NiceGUI awaits whatever a
+        # startup handler returns, and this watcher runs until shutdown.
+        asyncio.get_running_loop().create_task(watch())
+
+    app.on_startup(start)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        prog="ms-music-gui", description="Launch the ms_music GUI.")
-    parser.add_argument("--native", action="store_true",
-                        help="open in a desktop window (requires pywebview)")
-    parser.add_argument("--port", type=int, default=None,
-                        help="port to serve on (default: first free from 8765)")
-    parser.add_argument("--no-browser", action="store_true",
-                        help="don't open a browser tab automatically")
+        prog="ms-music-gui", description="Launch the ms_music GUI."
+    )
+    parser.add_argument(
+        "--native",
+        action="store_true",
+        help="open in a desktop window (requires pywebview)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="port to serve on (default: first free from 8765)",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="don't open a browser tab automatically",
+    )
+    parser.add_argument(
+        "--quit-when-closed",
+        action="store_true",
+        help="stop the server a minute after the last " "browser tab closes",
+    )
     args = parser.parse_args(argv)
 
     native = args.native
@@ -321,9 +479,14 @@ def main(argv=None):
         try:
             import webview  # noqa: F401
         except ImportError:
-            print("--native needs pywebview (pip install pywebview); "
-                  "opening in the browser instead.")
+            print(
+                "--native needs pywebview (pip install pywebview); "
+                "opening in the browser instead."
+            )
             native = False
+
+    if args.quit_when_closed:
+        _quit_when_closed()
 
     ui.run(
         build_ui,
@@ -334,7 +497,7 @@ def main(argv=None):
         show=not args.no_browser,
         native=native,
         window_size=(1280, 900) if native else None,
-        favicon="🎵",
+        favicon=_FAVICON if os.path.exists(_FAVICON) else "🎵",
         dark=None,
         # Keep a tab's server-side state through short disconnects (laptop
         # sleep, a busy browser) instead of dropping it after NiceGUI's 3 s

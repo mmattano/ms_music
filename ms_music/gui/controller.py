@@ -55,6 +55,13 @@ def parse_value(text, default):
         return text
 
 
+def mono(audio):
+    """Mono mixdown of (channels, samples) audio; mono passes through."""
+    if audio is None or audio.ndim == 1:
+        return audio
+    return audio.mean(axis=0).astype(np.float32)
+
+
 def function_param_spec(func, skip=(), skip_first=0, overrides=None):
     """``[(name, default), ...]`` for ``func``'s keyword parameters.
 
@@ -95,28 +102,176 @@ class SonifierController:
         self._snapshots: dict[str, np.ndarray] = {}
 
     # ------------------------------------------------------------------ data
-    def load_mzml(self, filepath, ms_level, duration_minutes, sample_rate,
-                  scan_ratio_range=None):
+    def load_mzml(
+        self,
+        filepath,
+        ms_level,
+        duration_minutes,
+        sample_rate,
+        scan_ratio_range=None,
+        rt_range=None,
+        mobility_range=None,
+        cache=True,
+        progress=None,
+    ):
         self.sonifier = MSSonifier(
             filepath=filepath,
             ms_level=int(ms_level),
             total_duration_minutes=float(duration_minutes),
             sample_rate=int(sample_rate),
         )
-        self.sonifier.load_and_preprocess_data(scan_ratio_range=scan_ratio_range)
+        self.sonifier.load_and_preprocess_data(
+            scan_ratio_range=scan_ratio_range,
+            rt_range=rt_range,
+            mobility_range=mobility_range,
+            cache=cache,
+            progress=progress,
+        )
         if not self.sonifier.processed_spectra_dfs:
             raise RuntimeError(
-                "No spectra were loaded. Check the file and MS level."
+                "No spectra were loaded. Check the file, MS level and ranges."
             )
         self._set_sample_rate(int(sample_rate))
         self.source_path = filepath
         self.source_kind = "mzml"
         self._reset_audio_state()
         n = len(self.sonifier.processed_spectra_dfs)
-        return f"Loaded {n} MS{int(ms_level)} scans from {os.path.basename(filepath)}."
+        cached = (
+            " (from cache)"
+            if (
+                self.sonifier.loaded_run
+                and self.sonifier.loaded_run.from_cache
+            )
+            else ""
+        )
+        return (
+            f"Loaded {n:,} MS{int(ms_level)} scans from "
+            f"{os.path.basename(filepath)}{cached}."
+        )
 
-    def load_fid(self, filepath, duration_minutes, sample_rate,
-                 original_sample_rate, conversion_factor):
+    def load_dia_reference(self, filepath=None, top_peaks=2000, progress=None):
+        """Load MS1 peaks used to find DIA precursor tones."""
+        self._require_ms_data()
+        self.sonifier.load_ms1_reference(
+            filepath or self.source_path,
+            top_peaks=top_peaks,
+            progress=progress,
+        )
+        ref = self.sonifier.ms1_reference_spectra
+        if not ref:
+            raise RuntimeError("No MS1 spectra found for the DIA reference.")
+        return f"Loaded {len(ref):,} MS1 reference spectra for DIA tones."
+
+    # ------------------------------------------------------------------ cache
+    @staticmethod
+    def cache_entries():
+        from .. import io as ms_io
+
+        return ms_io.list_cache()
+
+    @staticmethod
+    def remove_cache_entry(key):
+        from .. import io as ms_io
+
+        ms_io.remove_cache(key)
+
+    @staticmethod
+    def clear_cache():
+        from .. import io as ms_io
+
+        return ms_io.clear_cache()
+
+    def has_mobility(self):
+        return bool(
+            self.sonifier is not None
+            and getattr(self.sonifier, "has_ion_mobility", False)
+        )
+
+    def ms2_capabilities(self):
+        """Which MS2 precursor-tone modes can work with the loaded data,
+        with a reason for each one that can't."""
+        s = self.sonifier
+        if s is None or not s.processed_spectra_dfs:
+            reason = "Load an mzML file first."
+            return {
+                "dda": False,
+                "dia": False,
+                "dda_reason": reason,
+                "dia_reason": reason,
+            }
+        if s.ms_level < 2:
+            reason = "Only for MS2 data: load the file with MS level 2."
+            return {
+                "dda": False,
+                "dia": False,
+                "dda_reason": reason,
+                "dia_reason": reason,
+            }
+        has_prec = any(p is not None for p in (s.precursor_mz_list or []))
+        has_win = any(w is not None for w in (s.isolation_window_list or []))
+        has_ref = bool(s.ms1_reference_spectra)
+        return {
+            "dda": has_prec,
+            "dda_reason": (
+                None
+                if has_prec
+                else "The loaded MS2 scans have no selected precursor."
+            ),
+            "dia": has_win and has_ref,
+            "dia_reason": (
+                None
+                if has_win and has_ref
+                else (
+                    "The loaded MS2 scans have no isolation windows."
+                    if not has_win
+                    else "Load an MS1 reference first (Data page)."
+                )
+            ),
+        }
+
+    def data_summary(self):
+        """Facts about the loaded data for the Data page (None if none)."""
+        s = self.sonifier
+        if (
+            s is None
+            or self.source_kind != "mzml"
+            or not s.processed_spectra_dfs
+        ):
+            return None
+        dfs = s.processed_spectra_dfs
+        rts = [r for r in (s.retention_time_list or []) if r is not None]
+        info = {
+            "ms_level": s.ms_level,
+            "scans": len(dfs),
+            "bins": int(sum(len(df) for df in dfs)),
+            "median_bins": float(np.median([len(df) for df in dfs])),
+            "rt": (min(rts), max(rts)) if rts else None,
+            "mz": (s.min_mz_overall, s.max_mz_overall),
+            "mobility": None,
+            "precursors": sum(
+                p is not None for p in (s.precursor_mz_list or [])
+            ),
+            "windows": sum(
+                w is not None for w in (s.isolation_window_list or [])
+            ),
+            "dia_reference": len(s.ms1_reference_spectra or []),
+            "from_cache": bool(s.loaded_run and s.loaded_run.from_cache),
+        }
+        if s.ion_mobility_data:
+            info["mobility"] = {
+                "unit": s.ion_mobility_data["unit"],
+                "range": s.ion_mobility_data["range"],
+            }
+        return info
+
+    def load_fid(
+        self,
+        filepath,
+        duration_minutes,
+        sample_rate,
+        original_sample_rate,
+        conversion_factor,
+    ):
         self.sonifier = MSSonifier(
             filepath="",
             total_duration_minutes=float(duration_minutes),
@@ -133,7 +288,11 @@ class SonifierController:
         self.base_audio = self._current_or_none()
         self.effect_chain = []
         self.last_label = "FID"
-        secs = 0 if self.base_audio is None else len(self.base_audio) / self.sample_rate
+        secs = (
+            0
+            if self.base_audio is None
+            else len(self.base_audio) / self.sample_rate
+        )
         return f"Loaded FID {os.path.basename(filepath)} ({secs:.1f}s audio)."
 
     def load_wav(self, filepath, sample_rate):
@@ -141,7 +300,8 @@ class SonifierController:
 
         audio, sr = librosa.load(filepath, sr=int(sample_rate), mono=True)
         self.sonifier = MSSonifier(
-            filepath="", sample_rate=int(sr),
+            filepath="",
+            sample_rate=int(sr),
         )
         self.sonifier.current_audio_data = audio.astype(np.float32)
         self._set_sample_rate(int(sr))
@@ -150,13 +310,21 @@ class SonifierController:
         self.base_audio = audio.astype(np.float32)
         self.effect_chain = []
         self.last_label = os.path.splitext(os.path.basename(filepath))[0]
-        return (f"Loaded audio {os.path.basename(filepath)} "
-                f"({len(audio) / sr:.1f}s at {sr} Hz).")
+        return (
+            f"Loaded audio {os.path.basename(filepath)} "
+            f"({len(audio) / sr:.1f}s at {sr} Hz)."
+        )
 
     # -------------------------------------------------------------- synthesis
-    def sonify(self, method="gradient", frequency_mapping="inverse_log",
-               freq_range=(200.0, 4000.0), scale=None, rhythm=None,
-               **options):
+    def sonify(
+        self,
+        method="gradient",
+        frequency_mapping="inverse_log",
+        freq_range=(200.0, 4000.0),
+        scale=None,
+        rhythm=None,
+        **options,
+    ):
         """Run :meth:`MSSonifier.sonify` with the GUI's options.
 
         ``options`` are passed straight through (root_note, tuning_freq,
@@ -178,6 +346,14 @@ class SonifierController:
             parts.append(f"{scale} in {options.get('root_note', 'C')}")
         if grid is not None:
             parts.append(grid.config.describe())
+        mob = self.sonifier.mobility_config
+        if mob is not None:
+            bits = (
+                (["brightness"] if mob.brightness else [])
+                + (["stereo"] if mob.stereo else [])
+                + [f"{e.effect} {e.param}" for e in mob.effects]
+            )
+            parts.append("mobility: " + ", ".join(bits))
         self.last_label = " · ".join(parts)
         return f"Generated {self.last_label} ({self._duration_str()})."
 
@@ -273,28 +449,39 @@ class SonifierController:
 
     # ---------------------------------------------------- plots and videos
     def has_ms_data(self):
-        return bool(self.sonifier is not None
-                    and self.sonifier.processed_spectra_dfs)
+        return bool(
+            self.sonifier is not None and self.sonifier.processed_spectra_dfs
+        )
 
     def render_plot(self, entry, params, version_labels=()):
         """Build the figure for a catalog entry (runs on a worker thread)."""
         fig = entry.call(self._context(version_labels), params)
         if fig is None:
-            raise RuntimeError(f"{entry.label}: nothing to plot for this data.")
+            raise RuntimeError(
+                f"{entry.label}: nothing to plot for this data."
+            )
         return fig
 
-    def render_video(self, entry, params, output_path, version_labels=(),
-                     progress=None, cancelled=lambda: False):
+    def render_video(
+        self,
+        entry,
+        params,
+        output_path,
+        version_labels=(),
+        progress=None,
+        cancelled=lambda: False,
+    ):
         """Render a catalog video to ``output_path`` (worker thread).
 
         ``progress(frame, total)`` is called per frame; when ``cancelled()``
         turns true the render stops with :class:`RenderCancelled`."""
-        import shutil
+        from ..utils import ffmpeg_path
 
-        if shutil.which("ffmpeg") is None:
+        if ffmpeg_path() is None:
             raise RuntimeError(
-                "Video export needs ffmpeg on your PATH "
-                "(macOS: brew install ffmpeg; Linux: apt install ffmpeg).")
+                "Video export needs ffmpeg, which wasn't found. Reinstalling "
+                "ms_music installs a bundled copy (imageio-ffmpeg)."
+            )
 
         def on_frame(frame, total):
             if cancelled():
@@ -310,28 +497,52 @@ class SonifierController:
             raise RenderCancelled()
         if result is None or not os.path.exists(output_path):
             raise RuntimeError(
-                f"{entry.label} failed; see the log for the reason.")
+                f"{entry.label} failed; see the log for the reason."
+            )
         return output_path
 
     def _context(self, version_labels):
         from .catalog import Context
 
+        audio = self._current_or_none()
         return Context(
             sonifier=self.sonifier,
-            audio=self._current_or_none(),
+            audio=mono(audio),
             sample_rate=self.sample_rate,
-            versions=self.audio_versions(version_labels),
+            versions={
+                k: mono(v)
+                for k, v in self.audio_versions(version_labels).items()
+            },
+            stereo_audio=(
+                audio if audio is not None and audio.ndim == 2 else None
+            ),
         )
 
     # ------------------------------------------------------------------- midi
-    def generate_midi(self, output_path, scale, root_note, tempo, meter,
-                      quantization_mode, edo_divisions, use_just_intonation,
-                      duration_seconds, enable_mz_clustering, mz_tolerance_ppm,
-                      intensity_threshold_percentile, max_peaks_per_scan,
-                      frequency_mapping, instrument, max_simultaneous_notes,
-                      export_note_data, num_voices=1, separate_files=False):
-        if self.source_kind != "mzml" or not self.source_path:
-            raise RuntimeError("MIDI export needs an mzML file (Data tab).")
+    def generate_midi(
+        self,
+        output_path,
+        scale,
+        root_note,
+        tempo,
+        meter,
+        quantization_mode,
+        edo_divisions,
+        use_just_intonation,
+        duration_seconds,
+        enable_mz_clustering,
+        mz_tolerance_ppm,
+        intensity_threshold_percentile,
+        max_peaks_per_scan,
+        frequency_mapping,
+        instrument,
+        max_simultaneous_notes,
+        export_note_data,
+        num_voices=1,
+        separate_files=False,
+    ):
+        if self.source_kind != "mzml" or not self.has_ms_data():
+            raise RuntimeError("MIDI export needs an mzML file (Data page).")
 
         config = MidiConfig(
             scale=scale,
@@ -350,7 +561,16 @@ class SonifierController:
             mz_tolerance_ppm=float(mz_tolerance_ppm),
             use_ppm_tolerance=True,
         )
-        midi.load_and_analyze_data(total_duration_seconds=float(duration_seconds))
+        # Reuse the spectra already loaded (any MS level, with the Data
+        # page's ranges) instead of reading the file again.
+        s = self.sonifier
+        midi.load_processed(
+            s.processed_spectra_dfs,
+            s.max_intensity_overall,
+            s.min_mz_overall,
+            s.max_mz_overall,
+            total_duration_seconds=float(duration_seconds),
+        )
         midi.setup_musical_system(
             scale=scale,
             root_note=root_note,
@@ -359,7 +579,9 @@ class SonifierController:
             quantization_mode=quantization_mode,
         )
         midi.detect_and_quantize_peaks(
-            intensity_threshold_percentile=float(intensity_threshold_percentile),
+            intensity_threshold_percentile=float(
+                intensity_threshold_percentile
+            ),
             max_peaks_per_scan=int(max_peaks_per_scan),
             frequency_mapping=frequency_mapping,
         )
@@ -377,7 +599,9 @@ class SonifierController:
         report = midi.get_analysis_report()
         # Collect everything the generator wrote (voice files, note CSVs).
         base = output_path.rsplit(".mid", 1)[0]
-        written = sorted(set(glob.glob(base + "*.mid") + glob.glob(base + "*.csv")))
+        written = sorted(
+            set(glob.glob(base + "*.mid") + glob.glob(base + "*.csv"))
+        )
         message = (
             f"Generated MIDI. Voices: {num_voices}. "
             f"Notes: {report.get('note_count')}, "
@@ -396,7 +620,7 @@ class SonifierController:
         return self._current_or_none()
 
     def current_wav_bytes(self):
-        """The current buffer as a peak-normalized 16-bit WAV file in memory."""
+        """Current buffer as a peak-normalized 16-bit WAV file in memory."""
         audio = self._current_or_none()
         if audio is None or audio.size == 0:
             return None
@@ -414,7 +638,7 @@ class SonifierController:
 
         Per-bucket min/max keeps transients visible, unlike plain striding.
         """
-        audio = self._current_or_none()
+        audio = mono(self._current_or_none())
         if audio is None or audio.size == 0:
             return None
         n_buckets = max(1, min(max_points, audio.size))
@@ -428,16 +652,22 @@ class SonifierController:
 
     def duration_seconds(self):
         audio = self._current_or_none()
-        return 0.0 if audio is None else len(audio) / self.sample_rate
+        return 0.0 if audio is None else audio.shape[-1] / self.sample_rate
+
+    def is_stereo(self):
+        audio = self._current_or_none()
+        return audio is not None and audio.ndim == 2
 
     @staticmethod
     def all_scales():
         """Every selectable scale: 12-TET, EDO, and just-intonation names."""
         names = list(MusicalNoteQuantizer.SCALES.keys())
-        names += [s for s in MusicalNoteQuantizer.EDO_SCALES
-                  if s not in names]
-        names += [s for s in MusicalNoteQuantizer.JUST_INTONATION_RATIOS
-                  if s not in names]
+        names += [s for s in MusicalNoteQuantizer.EDO_SCALES if s not in names]
+        names += [
+            s
+            for s in MusicalNoteQuantizer.JUST_INTONATION_RATIOS
+            if s not in names
+        ]
         return names
 
     # ----------------------------------------------------------------- helpers
@@ -463,7 +693,7 @@ class SonifierController:
         audio = self._current_or_none()
         if audio is None:
             return "0.0s"
-        return f"{len(audio) / self.sample_rate:.1f}s"
+        return f"{audio.shape[-1] / self.sample_rate:.1f}s"
 
     def _chain_str(self):
         return " -> ".join(self.chain_labels()) or "(empty)"
@@ -478,4 +708,6 @@ class SonifierController:
 
     def _require_base(self):
         if self.base_audio is None:
-            raise RuntimeError("No base audio to modify. Generate audio first.")
+            raise RuntimeError(
+                "No base audio to modify. Generate audio first."
+            )
