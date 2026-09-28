@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ms_music"
-version = "0.2.0"
-description = "A Python package to generate audio and MIDI from mass spectrometry data with ion mobility support."
+version = "0.3.0"
+description = "A Python package to generate audio from mass spectrometry data."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
     { name = "Matthias Anagho-Mattanovich", email = "matthias.mattanovich@sund.ku.dk" },
@@ -15,11 +15,12 @@ authors = [
 keywords = [
     "mass-spectrometry",
     "sonification",
+    "audification",
     "audio",
     "midi",
     "bioinformatics",
     "data-visualization",
-    "microtonal",
+    "microtonality",
     "music-theory",
     "equal-temperament",
     "ion-mobility",
@@ -34,8 +35,6 @@ classifiers = [
     "Intended Audience :: Education",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -60,6 +59,11 @@ dependencies = [
     "seaborn>=0.11.0",
     "scikit-learn>=1.0.0",
     "nicegui>=2.0",
+    "imageio-ffmpeg>=0.4.9",
+    # numba/llvmlite (via librosa) stopped publishing Intel-Mac wheels after
+    # these versions; newer ones would have to compile LLVM from source.
+    "numba<0.63; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "llvmlite<0.46; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
 
 [project.optional-dependencies]
@@ -67,6 +71,11 @@ dev = ["pytest>=7.0", "build>=0.10", "twine>=4.0"]
 
 [project.scripts]
 ms-music-gui = "ms_music.gui:main"
+
+# Windowed launcher for desktop shortcuts: no console window on Windows,
+# opens the GUI in the browser and quits when the tab is closed.
+[project.gui-scripts]
+ms-music = "ms_music.gui:main_app"
 
 [project.urls]
 Homepage = "https://github.com/mmattano/ms_music"
@@ -77,3 +86,6 @@ Examples = "https://github.com/mmattano/ms_music/tree/main/examples"
 [tool.setuptools]
 packages = ["ms_music", "ms_music.gui"]
 zip-safe = false
+
+[tool.setuptools.package-data]
+"ms_music.gui" = ["assets/*"]
