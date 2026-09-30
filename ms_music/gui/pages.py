@@ -149,6 +149,15 @@ class TaskProgress:
         )
 
 
+def clean_path(text):
+    """A typed or pasted file path: trims spaces and the quotes that
+    Windows' "Copy as path" adds, and expands ``~``."""
+    path = (text or "").strip()
+    if len(path) >= 2 and path[0] == path[-1] and path[0] in "\"'":
+        path = path[1:-1].strip()
+    return os.path.expanduser(path) if path else ""
+
+
 def _float_or_none(value):
     return None if value in (None, "") else float(value)
 
@@ -287,7 +296,7 @@ def data_page(shell):
     load_progress = TaskProgress()
 
     async def do_load():
-        path = (file_input.value or "").strip()
+        path = clean_path(file_input.value)
         if not path:
             ui.notify("Choose a file first.", type="warning")
             return
@@ -425,7 +434,7 @@ def data_page(shell):
                         "Load reference",
                         icon="upload_file",
                         on_click=lambda: load_reference(
-                            (ref_input.value or "").strip()
+                            clean_path(ref_input.value)
                         ),
                     )
                 ref_progress_holder["progress"] = TaskProgress()
@@ -785,7 +794,7 @@ def sonify_page(shell):
         "Ion mobility",
         "Let each ion's mobility shape its sound: compact ions "
         "(low 1/K0) vs. extended ions (high 1/K0).",
-    ) as mob_card:
+    ):
         mobility_controls = MobilityControls(c)
         mob_note = ui.label().classes("text-xs text-grey")
 

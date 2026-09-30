@@ -1,5 +1,6 @@
 include README.md
 include LICENSE
+include CHANGELOG.md
 
 # Keep build artifacts and dev/junk out of the sdist
 prune examples

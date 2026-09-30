@@ -28,7 +28,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-from fastapi import HTTPException, Response  # noqa: E402
+from fastapi import Request, Response  # noqa: E402
 from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
@@ -68,7 +68,8 @@ _FAVICON = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
 
 def _serve_file(path, media_type):
     if path is None or not os.path.exists(path):
-        raise HTTPException(status_code=404)
+        # A plain response: NiceGUI < 3.12 turns a raised 404 into its page.
+        return Response(status_code=404)
     return FileResponse(path, media_type=media_type)
 
 
@@ -394,6 +395,18 @@ def _ping():
     from .. import __version__
 
     return {"app": "ms_music", "version": __version__}
+
+
+@app.post("/ms_music/quit")
+def _quit(request: Request):
+    """Lets the installer stop a running instance before updating it.
+
+    Needs a custom header, which a web page can't send cross-origin, so
+    other sites can't shut the app down."""
+    if request.headers.get("x-ms-music") != "quit":
+        return Response(status_code=403)
+    app.shutdown()
+    return {"stopping": True}
 
 
 def _free_port(preferred=DEFAULT_PORT):

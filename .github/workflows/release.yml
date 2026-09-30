@@ -1,6 +1,7 @@
-# Publish a release: push a tag like v0.3.0 (matching the version in
-# pyproject.toml). Builds the package, publishes it to PyPI and creates a
-# GitHub release with the one-click installers attached.
+# Publish a release: push a tag like v0.3.0 (matching __version__ in
+# ms_music/__init__.py). Runs the tests, builds the package, publishes it to
+# PyPI and creates a GitHub release with the one-click installers attached
+# and the version's CHANGELOG.md section as its notes.
 #
 # One-time setup on pypi.org: add a "trusted publisher" for this repository
 # (workflow: release.yml, environment: pypi). No API token is needed.
@@ -12,7 +13,11 @@ on:
     tags: ["v*"]
 
 jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
   build:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,9 +26,9 @@ jobs:
           python-version: "3.12"
       - name: Check the tag matches the package version
         run: |
-          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          version=$(python -c "import re; print(re.search(r'^__version__ = \"(.+)\"', open('ms_music/__init__.py').read(), re.M).group(1))")
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match pyproject version $version"
+            echo "Tag $GITHUB_REF_NAME does not match ms_music.__version__ $version"
             exit 1
           fi
       - name: Build sdist and wheel
@@ -33,6 +38,29 @@ jobs:
           python -m twine check dist/*
       - name: Build the installer downloads
         run: python installer/build_release_assets.py installers
+      - name: Write the release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          {
+            # This version's section of CHANGELOG.md
+            awk -v v="$version" '/^## /{p = index($0, "[" v "]") > 0; next} p' CHANGELOG.md
+            cat <<EOF
+
+          ## Install (no coding needed)
+
+          **macOS:** download \`ms_music-macOS-installer.zip\`, open it, then
+          right-click **Install ms_music.command** → **Open** (the first time
+          macOS asks because the file comes from the internet).
+
+          **Windows:** download **Install ms_music.bat** and double-click it.
+          If Windows shows "Windows protected your PC", click **More info** →
+          **Run anyway**.
+
+          Running the installer again updates ms_music. The uninstallers remove it.
+          Also available on PyPI: \`pip install ms_music==$version\`.
+          EOF
+          } > release_notes.md
+          cat release_notes.md
       - uses: actions/upload-artifact@v4
         with:
           name: packages
@@ -41,6 +69,10 @@ jobs:
         with:
           name: installers
           path: installers/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release_notes.md
 
   pypi:
     needs: build
@@ -65,19 +97,10 @@ jobs:
         with:
           name: installers
           path: installers/
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
       - uses: softprops/action-gh-release@v2
         with:
           files: installers/*
-          body: |
-            ## Install (no coding needed)
-
-            **macOS:** download `ms_music-macOS-installer.zip`, open it, then
-            right-click **Install ms_music.command** → **Open** (the first time
-            macOS asks because the file comes from the internet).
-
-            **Windows:** download **Install ms_music.bat** and double-click it.
-            If Windows shows "Windows protected your PC", click **More info** →
-            **Run anyway**.
-
-            Running the installer again updates ms_music. The uninstallers remove it.
-            Also available on PyPI: `pip install ms_music==${{ github.ref_name }}`.
+          body_path: release_notes.md

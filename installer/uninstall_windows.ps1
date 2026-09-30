@@ -9,6 +9,21 @@ $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
 
 Write-Host ""; Write-Host "Removing ms_music" -ForegroundColor Cyan
 if (Get-Command uv -ErrorAction SilentlyContinue) {
+    # A running ms_music keeps its files locked:
+    # ask it to quit (ports as in ms_music.gui.PORT_RANGE), then make sure.
+    $Stopped = $false
+    foreach ($Port in 8765..8774) {
+        try {
+            Invoke-RestMethod -Method Post -TimeoutSec 2 -Headers @{ 'X-MS-Music' = 'quit' } "http://127.0.0.1:$Port/ms_music/quit" | Out-Null
+            $Stopped = $true
+        } catch { }
+    }
+    $ToolRoot = Join-Path (& uv tool dir).Trim() 'ms-music'
+    $Running = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -and ($_.Path.StartsWith($ToolRoot, 'OrdinalIgnoreCase') -or $_.Path -like '*\.local\bin\ms-music.exe')
+    }
+    if ($Running) { $Running | Stop-Process -Force -ErrorAction SilentlyContinue; $Stopped = $true }
+    if ($Stopped) { Write-Host "Stopped the running ms_music."; Start-Sleep -Seconds 2 }
     & uv tool uninstall ms_music 2>$null
     if ($LASTEXITCODE -eq 0) { Write-Host "Removed the ms_music program." }
     else { Write-Host "The ms_music program was not installed." }

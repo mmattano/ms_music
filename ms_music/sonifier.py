@@ -10,7 +10,7 @@ import librosa
 from . import io
 from . import effects as audio_effects
 from .mobility import MobilityConfig, ToneBus
-from .musical_quantization import MusicalNoteQuantizer
+from .musical_quantization import MusicalNoteQuantizer, normalized_mz
 from .rhythm import (
     RhythmConfig,
     build_grid,
@@ -319,8 +319,9 @@ class MSSonifier:
             self.current_audio_data is None
             or self.current_audio_data.size == 0
         ):
-            print("No audio data to apply effects to. Please sonify first.")
-            return
+            raise RuntimeError(
+                "No audio data to apply effects to. Please sonify first."
+            )
 
         if effect_params is None:
             effect_params = {}
@@ -330,18 +331,15 @@ class MSSonifier:
 
         # Check if the function exists
         if not hasattr(audio_effects, effect_function_name):
-            print(
-                f"Error: Effect function '{effect_function_name}' not found "
-                f"in effects module."
-            )
-            effect_names = [
-                name
+            effect_names = sorted(
+                name[len("apply_"):]
                 for name in dir(audio_effects)
                 if name.startswith("apply_")
-            ]
-            effects_list = ", ".join(effect_names)
-            print(f"Available effects: {effects_list}")
-            return
+            )
+            raise ValueError(
+                f"Unknown effect {effect_name!r}. Available effects: "
+                + ", ".join(effect_names)
+            )
 
         effect_function = getattr(audio_effects, effect_function_name)
 
@@ -373,8 +371,7 @@ class MSSonifier:
             self.current_audio_data is None
             or self.current_audio_data.size == 0
         ):
-            print("No audio data to save. Please sonify first.")
-            return
+            raise RuntimeError("No audio data to save. Please sonify first.")
 
         audio_to_save = self.current_audio_data
         if normalize:
@@ -970,20 +967,18 @@ class MSSonifier:
         if mapping_type == "inverse_log":
             if mz_value <= 0 or self.min_mz_overall <= 0:
                 return freq_min
-            mz_normalized = (mz_value - self.min_mz_overall) / (
-                self.max_mz_overall - self.min_mz_overall
+            mz_normalized = normalized_mz(
+                mz_value, self.min_mz_overall, self.max_mz_overall
             )
-            mz_normalized = np.clip(mz_normalized, 0, 1)
             log_ratio = math.log(freq_max / freq_min)
             return freq_max * math.exp(-mz_normalized * log_ratio)
 
         elif mapping_type == "power_law":
             if mz_value <= 0:
                 return freq_min
-            mz_normalized = (mz_value - self.min_mz_overall) / (
-                self.max_mz_overall - self.min_mz_overall
+            mz_normalized = normalized_mz(
+                mz_value, self.min_mz_overall, self.max_mz_overall
             )
-            mz_normalized = np.clip(mz_normalized, 0, 1)
             freq_normalized = (1 - mz_normalized) ** 1.5  # Power law exponent
             log_freq_min = math.log(freq_min)
             log_freq_max = math.log(freq_max)
@@ -995,10 +990,9 @@ class MSSonifier:
         elif mapping_type == "musical_octaves":
             if mz_value <= 0:
                 return freq_min
-            mz_normalized = (mz_value - self.min_mz_overall) / (
-                self.max_mz_overall - self.min_mz_overall
+            mz_normalized = normalized_mz(
+                mz_value, self.min_mz_overall, self.max_mz_overall
             )
-            mz_normalized = np.clip(mz_normalized, 0, 1)
             mz_inverted = 1 - mz_normalized
             num_octaves = math.log2(
                 freq_max / freq_min
@@ -1009,10 +1003,9 @@ class MSSonifier:
         elif mapping_type == "chromatic":
             if mz_value <= 0:
                 return freq_min
-            mz_normalized = (mz_value - self.min_mz_overall) / (
-                self.max_mz_overall - self.min_mz_overall
+            mz_normalized = normalized_mz(
+                mz_value, self.min_mz_overall, self.max_mz_overall
             )
-            mz_normalized = np.clip(mz_normalized, 0, 1)
             mz_inverted = 1 - mz_normalized
             num_semitones = 12 * math.log2(
                 freq_max / freq_min
@@ -1023,10 +1016,9 @@ class MSSonifier:
         elif mapping_type == "linear":
             if mz_value <= 0:
                 return freq_min
-            mz_normalized = (mz_value - self.min_mz_overall) / (
-                self.max_mz_overall - self.min_mz_overall
+            mz_normalized = normalized_mz(
+                mz_value, self.min_mz_overall, self.max_mz_overall
             )
-            mz_normalized = np.clip(mz_normalized, 0, 1)
             return freq_min + mz_normalized * (freq_max - freq_min)
 
         else:

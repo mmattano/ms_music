@@ -1,7 +1,5 @@
 # ms_music: Mass Spectrometry Data Sonification
 
-**Version: 0.2.0**
-
 `ms_music` is a  Python package for transforming mass spectrometry data into "music". This sonification toolkit goes beyond simple data-to-sound conversion, offering musical quantization, extensive effects processing, MIDI generation, and visualization.
 
 ## Table of Contents
@@ -240,7 +238,7 @@ Pages in the sidebar follow the normal workflow:
   heatmap). Every plot's options are editable; download as PNG.
 * **Video** – render any of the video types (playback, animated views, 3D waterfalls and
   build-ups, 3D scan/heatmap views, side-by-side comparisons) with a progress bar, time
-  estimate and Cancel; preview in the page and download as MP4. Needs `ffmpeg`.
+  estimate and Cancel; preview in the page and download as MP4 (ffmpeg is bundled).
 
 A player bar at the bottom always shows the current audio's waveform (with bar lines when it
 is metered), lets you play and seek it in the browser, lists the applied effect chain, and
@@ -249,7 +247,7 @@ version** for the comparison plots and videos. Long-running steps run in the bac
 the interface stays responsive; a spinner in the header shows when work is in progress, and
 the log (header button) records every step.
 
-## Detailed Use
+## Detailed Usage
 
 ### Basic Sonification
 
@@ -449,6 +447,8 @@ when sonified; precursor tones then include every precursor in a bin.
 Keeping only the top peaks per scan helps MS2 sound less like noise:
 
 ```python
+import ms_music.visualizations as viz
+
 ms2 = MSSonifier("run.mzML", ms_level=2, total_duration_minutes=1)
 ms2.load_and_preprocess_data()
 ms2.sonify(ms2_mode="dda", max_peaks_per_scan=50)   # selected precursors
@@ -462,6 +462,8 @@ viz.plot_precursor_map(ms2, color_by="charge")      # RT × precursor m/z
 MIDI export can reuse data that is already loaded, instead of reading the file again:
 
 ```python
+from ms_music import MSSonifierMidi
+
 midi = MSSonifierMidi("run.mzML")
 midi.load_processed(ms2.processed_spectra_dfs, ms2.max_intensity_overall,
                     ms2.min_mz_overall, ms2.max_mz_overall,
@@ -669,7 +671,7 @@ fid_sonifier.save_audio("fid_processed.wav")
 
 ## Examples
 
-A Jupyter notebook (`examples.ipynb`) demonstrates:
+The Jupyter notebook [`examples/examples.ipynb`](https://github.com/mmattano/MS_Music/blob/main/examples/examples.ipynb) demonstrates:
 
 - Loading and preprocessing MS data
 - All sonification methods and frequency mappings
@@ -680,6 +682,15 @@ A Jupyter notebook (`examples.ipynb`) demonstrates:
 - FID data processing
 
 Run the notebook to explore the full capabilities!
+
+[`examples/generate_examples.py`](https://github.com/mmattano/MS_Music/blob/main/examples/generate_examples.py) renders an example of every
+feature (sonification methods, tunings, effects, MIDI, plots and videos) from your own data:
+
+```bash
+python examples/generate_examples.py path/to/ms1.mzML [path/to/ms2.mzML]
+```
+
+The results go to `examples/output/`.
 
 ## Contributing
 

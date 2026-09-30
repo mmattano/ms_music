@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ms_music"
-version = "0.3.0"
+dynamic = ["version"]
 description = "A Python package to generate audio from mass spectrometry data."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Matthias Anagho-Mattanovich", email = "matthias.mattanovich@sund.ku.dk" },
 ]
@@ -33,7 +34,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Education",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -58,7 +58,7 @@ dependencies = [
     "mido>=1.2.10",
     "seaborn>=0.11.0",
     "scikit-learn>=1.0.0",
-    "nicegui>=2.0",
+    "nicegui>=3.0",
     "imageio-ffmpeg>=0.4.9",
     # numba/llvmlite (via librosa) stopped publishing Intel-Mac wheels after
     # these versions; newer ones would have to compile LLVM from source.
@@ -86,6 +86,9 @@ Examples = "https://github.com/mmattano/ms_music/tree/main/examples"
 [tool.setuptools]
 packages = ["ms_music", "ms_music.gui"]
 zip-safe = false
+
+[tool.setuptools.dynamic]
+version = { attr = "ms_music.__version__" }
 
 [tool.setuptools.package-data]
 "ms_music.gui" = ["assets/*"]

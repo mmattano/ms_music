@@ -39,6 +39,18 @@ ROOT_NOTES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 # driven through MSSonifier.apply_effect / the Effects tab.
 _EFFECTS_EXCLUDED = {"apply_crossfade"}
 
+# Starting values for effect parameters that have no default, so the
+# Effects form never starts empty.
+_REQUIRED_DEFAULTS = {
+    "cutoff_freq": 1000.0,
+    "low_freq": 300.0,
+    "high_freq": 3000.0,
+    "notch_freq": 1000.0,
+    "ripple_db": 1.0,
+    "n_steps": 2.0,
+    "rate": 1.0,
+}
+
 
 def parse_value(text, default):
     """Parse a form field back into a Python value.
@@ -81,6 +93,12 @@ def function_param_spec(func, skip=(), skip_first=0, overrides=None):
     return spec
 
 
+def _is_required(func, name):
+    """Whether ``func``'s parameter ``name`` has no default."""
+    param = inspect.signature(func).parameters.get(name)
+    return param is not None and param.default is inspect.Parameter.empty
+
+
 class RenderCancelled(Exception):
     """Raised from a video progress callback to stop rendering."""
 
@@ -114,23 +132,26 @@ class SonifierController:
         cache=True,
         progress=None,
     ):
-        self.sonifier = MSSonifier(
+        # Load into a new sonifier and switch only on success, so a failed
+        # load keeps the current data and audio.
+        sonifier = MSSonifier(
             filepath=filepath,
             ms_level=int(ms_level),
             total_duration_minutes=float(duration_minutes),
             sample_rate=int(sample_rate),
         )
-        self.sonifier.load_and_preprocess_data(
+        sonifier.load_and_preprocess_data(
             scan_ratio_range=scan_ratio_range,
             rt_range=rt_range,
             mobility_range=mobility_range,
             cache=cache,
             progress=progress,
         )
-        if not self.sonifier.processed_spectra_dfs:
+        if not sonifier.processed_spectra_dfs:
             raise RuntimeError(
                 "No spectra were loaded. Check the file, MS level and ranges."
             )
+        self.sonifier = sonifier
         self._set_sample_rate(int(sample_rate))
         self.source_path = filepath
         self.source_kind = "mzml"
@@ -272,16 +293,20 @@ class SonifierController:
         original_sample_rate,
         conversion_factor,
     ):
-        self.sonifier = MSSonifier(
+        sonifier = MSSonifier(
             filepath="",
             total_duration_minutes=float(duration_minutes),
             sample_rate=int(sample_rate),
         )
-        self.sonifier.load_fid_data(
+        sonifier.load_fid_data(
             filepath,
             original_sample_rate=float(original_sample_rate),
             conversion_factor=float(conversion_factor),
         )
+        audio = getattr(sonifier, "current_audio_data", None)
+        if audio is None or audio.size == 0:
+            raise RuntimeError(f"No audio could be read from {filepath}.")
+        self.sonifier = sonifier
         self._set_sample_rate(int(sample_rate))
         self.source_path = filepath
         self.source_kind = "fid"
@@ -299,6 +324,8 @@ class SonifierController:
         import librosa
 
         audio, sr = librosa.load(filepath, sr=int(sample_rate), mono=True)
+        if audio.size == 0:
+            raise RuntimeError(f"{filepath} contains no audio.")
         self.sonifier = MSSonifier(
             filepath="",
             sample_rate=int(sr),
@@ -376,11 +403,32 @@ class SonifierController:
     def effect_param_spec(effect_name):
         """Return [(param_name, default), ...] for an effect, skipping the
         audio_data / sample_rate positional args."""
+        from ..effect_guide import parameter_guide
+
         func = getattr(audio_effects, f"apply_{effect_name}")
-        return function_param_spec(func, skip_first=2)
+        spec = []
+        for name, default in function_param_spec(func, skip_first=2):
+            if default is None and _is_required(func, name):
+                default = _REQUIRED_DEFAULTS.get(name)
+                guide = parameter_guide(effect_name, name)
+                if default is None and guide is not None and guide.mappable:
+                    default = guide.suggest[0]
+            spec.append((name, default))
+        return spec
 
     def apply_effect(self, effect_name, params):
         self._require_audio()
+        func = getattr(audio_effects, f"apply_{effect_name}", None)
+        if func is not None:
+            missing = [
+                name
+                for name, value in params.items()
+                if value is None and _is_required(func, name)
+            ]
+            if missing:
+                raise ValueError(
+                    f"{effect_name}: set {', '.join(missing)} first."
+                )
         self.sonifier.apply_effect(effect_name, params)
         self.effect_chain.append((effect_name, params))
         return f"Applied {effect_name}. Chain: {self._chain_str()}"

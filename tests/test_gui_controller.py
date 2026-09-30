@@ -121,9 +121,27 @@ def test_web_app_serves_page():
                 f"http://127.0.0.1:{port}/ms_music/audio/0.wav", timeout=5
             )
         assert err.value.code == 404
+
+        # The installers stop a running app through /ms_music/quit, which
+        # needs their header (a web page can't send it cross-origin).
+        quit_url = f"http://127.0.0.1:{port}/ms_music/quit"
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(
+                urllib.request.Request(quit_url, method="POST"), timeout=5
+            )
+        assert err.value.code == 403
+        assert proc.poll() is None
+        urllib.request.urlopen(
+            urllib.request.Request(
+                quit_url, method="POST", headers={"X-MS-Music": "quit"}
+            ),
+            timeout=5,
+        )
+        proc.wait(timeout=30)
     finally:
-        proc.terminate()
-        proc.wait(timeout=10)
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=10)
 
 
 # ------------------------------------------------ snapshots, plots, videos

@@ -18,6 +18,19 @@ finish() {
 
 printf '\n\033[1mRemoving ms_music\033[0m\n'
 if command -v uv >/dev/null 2>&1; then
+    # A running ms_music would keep serving the old version: ask it to quit
+    # (ports as in ms_music.gui.PORT_RANGE), then make sure it has.
+    stopped=""
+    for port in $(seq 8765 8774); do
+        curl -sf -m 2 -X POST -H "X-MS-Music: quit" \
+            "http://127.0.0.1:$port/ms_music/quit" >/dev/null 2>&1 && stopped=1
+    done
+    TOOL_PY="$(uv tool dir 2>/dev/null)/ms-music/bin/python"
+    pkill -f "$TOOL_PY" >/dev/null 2>&1 && stopped=1
+    if [ -n "$stopped" ]; then
+        echo "Stopped the running ms_music."
+        sleep 2
+    fi
     uv tool uninstall ms_music 2>/dev/null && echo "Removed the ms_music program." \
         || echo "The ms_music program was not installed."
 fi

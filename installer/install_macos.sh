@@ -48,6 +48,19 @@ else
 fi
 
 bold "Step 2 of 3: installing ms_music"
+# A running ms_music would keep serving the old version: ask it to quit
+# (ports as in ms_music.gui.PORT_RANGE), then make sure it has.
+stopped=""
+for port in $(seq 8765 8774); do
+    curl -sf -m 2 -X POST -H "X-MS-Music: quit" \
+        "http://127.0.0.1:$port/ms_music/quit" >/dev/null 2>&1 && stopped=1
+done
+TOOL_PY="$(uv tool dir 2>/dev/null)/ms-music/bin/python"
+pkill -f "$TOOL_PY" >/dev/null 2>&1 && stopped=1
+if [ -n "$stopped" ]; then
+    echo "Stopped the running ms_music."
+    sleep 2
+fi
 # --compile-bytecode: prepare Python files now, so the first start is quick.
 uv tool install --python "$PYTHON_VERSION" --upgrade --force --compile-bytecode "$PACKAGE" \
     || fail "uv could not install ms_music."

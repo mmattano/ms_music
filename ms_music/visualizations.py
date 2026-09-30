@@ -2254,7 +2254,6 @@ def plot_audio_comparison(
     axes[-1].set_xlabel("Time (s)")
     plt.suptitle(title, fontsize=16)
     plt.tight_layout()
-    plt.show()
 
     return fig
 
@@ -2299,7 +2298,6 @@ def plot_spectrogram(
     fig.colorbar(img, ax=ax, format="%+2.0f dB")
 
     plt.tight_layout()
-    plt.show()
 
     return fig
 

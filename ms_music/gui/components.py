@@ -8,8 +8,11 @@ only the ``ui.*`` builders must run on the event loop.
 
 from __future__ import annotations
 
+import glob
 import io
 import os
+import string
+import sys
 import zipfile
 from pathlib import Path
 
@@ -19,6 +22,33 @@ from .controller import parse_value
 
 
 # ------------------------------------------------------------ file picker
+def drive_roots():
+    """Top-level places to browse besides home: drive letters on Windows,
+    mounted volumes (external disks, network shares) elsewhere."""
+    if os.name == "nt":
+        if hasattr(os, "listdrives"):  # Python 3.12+
+            try:
+                return [Path(d) for d in os.listdrives()]
+            except OSError:
+                pass
+        return [
+            Path(f"{letter}:\\")
+            for letter in string.ascii_uppercase
+            if os.path.exists(f"{letter}:\\")
+        ]
+    patterns = (
+        ["/Volumes/*"]
+        if sys.platform == "darwin"
+        else ["/media/*/*", "/mnt/*", "/run/media/*/*"]
+    )
+    roots = [Path("/")]
+    for pattern in patterns:
+        roots += [
+            Path(p) for p in sorted(glob.glob(pattern)) if os.path.isdir(p)
+        ]
+    return roots
+
+
 class LocalFilePicker(ui.dialog):
     """Browse the local filesystem and pick a file.
 
@@ -45,6 +75,15 @@ class LocalFilePicker(ui.dialog):
                 ui.button(
                     icon="home", on_click=lambda: self._go(Path.home())
                 ).props("flat round dense").tooltip("Home")
+                with ui.button(icon="storage").props(
+                    "flat round dense"
+                ).tooltip("Drives and volumes"):
+                    with ui.menu():
+                        for root in drive_roots():
+                            ui.menu_item(
+                                str(root) if root.name == "" else root.name,
+                                on_click=lambda r=root: self._go(r),
+                            )
                 self.path_label = ui.label().classes(
                     "text-sm font-mono truncate grow"
                 )

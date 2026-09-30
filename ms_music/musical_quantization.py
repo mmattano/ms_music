@@ -910,6 +910,17 @@ class MusicalNoteQuantizer:
         return note_info
 
 
+def normalized_mz(mz_value, min_mz, max_mz):
+    """Position of ``mz_value`` in [min_mz, max_mz], clipped to 0..1.
+
+    0 when the range is empty (all data in one m/z bin), instead of 0/0.
+    """
+    span = max_mz - min_mz
+    if not span > 0:
+        return 0.0
+    return float(np.clip((mz_value - min_mz) / span, 0, 1))
+
+
 def mz_to_frequency_inverse_log(
     mz_value, freq_range, min_mz_overall, max_mz_overall
 ):
@@ -917,10 +928,9 @@ def mz_to_frequency_inverse_log(
     if mz_value <= 0 or min_mz_overall <= 0:
         return freq_range[0]
 
-    mz_normalized = (mz_value - min_mz_overall) / (
-        max_mz_overall - min_mz_overall
+    mz_normalized = normalized_mz(
+        mz_value, min_mz_overall, max_mz_overall
     )
-    mz_normalized = np.clip(mz_normalized, 0, 1)
 
     log_ratio = math.log(freq_range[1] / freq_range[0])
     frequency = freq_range[1] * math.exp(-mz_normalized * log_ratio)
@@ -935,10 +945,9 @@ def mz_to_frequency_power_law(
     if mz_value <= 0:
         return freq_range[0]
 
-    mz_normalized = (mz_value - min_mz_overall) / (
-        max_mz_overall - min_mz_overall
+    mz_normalized = normalized_mz(
+        mz_value, min_mz_overall, max_mz_overall
     )
-    mz_normalized = np.clip(mz_normalized, 0, 1)
 
     freq_normalized = (1 - mz_normalized) ** exponent
 
@@ -958,10 +967,9 @@ def mz_to_frequency_musical_octaves(
     if mz_value <= 0:
         return base_freq
 
-    mz_normalized = (mz_value - min_mz_overall) / (
-        max_mz_overall - min_mz_overall
+    mz_normalized = normalized_mz(
+        mz_value, min_mz_overall, max_mz_overall
     )
-    mz_normalized = np.clip(mz_normalized, 0, 1)
 
     mz_inverted = 1 - mz_normalized
     octave_position = mz_inverted * num_octaves
@@ -981,10 +989,9 @@ def mz_to_frequency_chromatic(
     if mz_value <= 0:
         return base_freq
 
-    mz_normalized = (mz_value - min_mz_overall) / (
-        max_mz_overall - min_mz_overall
+    mz_normalized = normalized_mz(
+        mz_value, min_mz_overall, max_mz_overall
     )
-    mz_normalized = np.clip(mz_normalized, 0, 1)
     mz_inverted = 1 - mz_normalized
 
     semitone_position = mz_inverted * num_semitones
@@ -1000,9 +1007,8 @@ def mz_to_frequency_linear(
     if mz_value <= 0:
         return freq_range[0]
 
-    mz_normalized = (mz_value - min_mz_overall) / (
-        max_mz_overall - min_mz_overall
+    mz_normalized = normalized_mz(
+        mz_value, min_mz_overall, max_mz_overall
     )
-    mz_normalized = np.clip(mz_normalized, 0, 1)
 
     return freq_range[0] + mz_normalized * (freq_range[1] - freq_range[0])

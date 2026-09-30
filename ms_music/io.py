@@ -789,9 +789,10 @@ def save_wav(filepath: str, audio_data: np.ndarray, sample_rate: int = 44100):
         audio_data: Audio signal array
         sample_rate: Sample rate in Hz
     """
-    # Ensure audio is in the correct format
+    # Float audio is taken as full scale at +/-1 (clipped, not normalized:
+    # normalize first with normalize_audio_to_16bit if that is wanted).
     if audio_data.dtype != np.int16:
-        audio_data = normalize_audio_to_16bit(audio_data)
+        audio_data = (np.clip(audio_data, -1.0, 1.0) * 32767).astype(np.int16)
     # Stereo arrays are (channels, samples); WAV writers want (samples, ch).
     if audio_data.ndim == 2 and audio_data.shape[0] <= 8 < audio_data.shape[1]:
         audio_data = audio_data.T

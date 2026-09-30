@@ -40,6 +40,21 @@ try {
     }
 
     Say "Step 2 of 3: installing ms_music"
+    # A running ms_music keeps its files locked, so the update would fail:
+    # ask it to quit (ports as in ms_music.gui.PORT_RANGE), then make sure.
+    $Stopped = $false
+    foreach ($Port in 8765..8774) {
+        try {
+            Invoke-RestMethod -Method Post -TimeoutSec 2 -Headers @{ 'X-MS-Music' = 'quit' } "http://127.0.0.1:$Port/ms_music/quit" | Out-Null
+            $Stopped = $true
+        } catch { }
+    }
+    $ToolRoot = Join-Path (& uv tool dir).Trim() 'ms-music'
+    $Running = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -and ($_.Path.StartsWith($ToolRoot, 'OrdinalIgnoreCase') -or $_.Path -like '*\.local\bin\ms-music.exe')
+    }
+    if ($Running) { $Running | Stop-Process -Force -ErrorAction SilentlyContinue; $Stopped = $true }
+    if ($Stopped) { Write-Host "Stopped the running ms_music."; Start-Sleep -Seconds 2 }
     # --compile-bytecode: prepare Python files now, so the first start is quick.
     & uv tool install --python $PythonVersion --upgrade --force --compile-bytecode $Package
     if ($LASTEXITCODE -ne 0) { throw "uv could not install ms_music." }
@@ -67,8 +82,14 @@ try {
     Write-Host "Preparing ms_music for its first start (about a minute)..."
     # Loading everything once now does the first-time work (virus scan of the
     # new libraries, matplotlib font cache) here, not on the first launch.
+    # Windows PowerShell turns any stderr line of a redirected command into
+    # an error under 'Stop' (matplotlib warns while building its font cache),
+    # so judge this step by the exit code only.
+    $ErrorActionPreference = 'Continue'
     & $Python -c "import ms_music.gui.app, ms_music.visualizations" 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "ms_music does not start (the import failed)." }
+    $ImportExit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($ImportExit -ne 0) { throw "ms_music does not start (the import failed)." }
 
     $Version = (& $Python -c "import ms_music; print(ms_music.__version__)").Trim()
     Say "Done! ms_music $Version is installed."

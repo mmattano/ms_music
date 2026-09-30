@@ -1,6 +1,7 @@
 import numpy as np
 import librosa
 from scipy import signal
+from scipy.ndimage import maximum_filter1d
 import warnings
 
 TAU = 2 * np.pi
@@ -846,26 +847,31 @@ def apply_limiter(
 
     # Pad audio for lookahead
     padded_audio = np.pad(audio_float, (lookahead_samples, 0), mode="constant")
-    output = np.zeros_like(padded_audio)
 
+    # Peak of the next `window` samples at every position (vectorized; the
+    # window always includes the current sample).
+    window = max(lookahead_samples, 1)
+    future_peaks = maximum_filter1d(
+        np.abs(padded_audio),
+        size=window,
+        origin=-(window // 2),
+        mode="constant",
+        cval=0.0,
+    )
+
+    release_step = 1.0 - release_coeff
+    gains = np.empty(len(padded_audio), dtype=np.float64)
     gain_reduction = 1.0
-
-    for i in range(len(padded_audio)):
-        # Look ahead for peaks
-        future_peak = 0.0
-        for j in range(min(lookahead_samples, len(padded_audio) - i)):
-            future_peak = max(future_peak, abs(padded_audio[i + j]))
-
+    for i, future_peak in enumerate(future_peaks.tolist()):
         # Calculate required gain reduction
         if future_peak * gain_reduction > threshold_linear:
-            required_gain = threshold_linear / future_peak
-            gain_reduction = min(gain_reduction, required_gain)
+            gain_reduction = min(gain_reduction, threshold_linear / future_peak)
         else:
             # Release
-            gain_reduction = min(1.0, gain_reduction + (1 - release_coeff))
+            gain_reduction = min(1.0, gain_reduction + release_step)
+        gains[i] = gain_reduction
 
-        output[i] = padded_audio[i] * gain_reduction
-
+    output = (padded_audio * gains).astype(padded_audio.dtype)
     return output[lookahead_samples:]
 
 
@@ -1591,8 +1597,9 @@ def apply_adaptive_filter(
 
         error = desired - y
 
-        # Update weights
-        w = w + mu * error * x
+        # Update weights; dividing by the input power once it exceeds 1
+        # (normalized LMS) keeps loud input from diverging to NaN.
+        w = w + mu * error * x / max(1.0, float(np.dot(x, x)))
 
     return output
 
