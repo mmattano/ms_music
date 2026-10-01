@@ -129,7 +129,10 @@ def test_mono_mobility_options_stay_mono_and_default_unchanged():
 def test_mapped_reverb_gives_high_mobility_more_tail():
     """With reverb wet 0 -> 1 across mobility, only the extended ion
     keeps ringing after the sound stops."""
-    s = _sonifier(n_scans=4)
+    s = _sonifier(n_scans=8)
+    # Both ions play for the first half, then stop.
+    for df in s.processed_spectra_dfs[4:]:
+        df["intensities"] = 0.0
     reverb = ("reverb", "dry_wet_mix", 0.0, 1.0, {"reverb_time_s": 1.5})
     s.sonify(
         frequency_mapping="linear",
@@ -140,15 +143,18 @@ def test_mapped_reverb_gives_high_mobility_more_tail():
     assert audio.ndim == 1
     f_low = s._mz_to_frequency(150.0, "linear", (200.0, 1000.0))
     f_high = s._mz_to_frequency(900.0, "linear", (200.0, 1000.0))
-    # The reverb spreads each tone; compare how much sits away from the
-    # pure tone (wet energy) for each pitch.
-    spec_low = _band_energy(audio, f_low, width=3) / _band_energy(
-        audio, f_low, width=60
-    )
-    spec_high = _band_energy(audio, f_high, width=3) / _band_energy(
-        audio, f_high, width=60
-    )
-    assert spec_high < spec_low
+    # Energy of each pitch in the last quarter (after the sound stopped)
+    # relative to while it played. The reverb's impulse response is random,
+    # but the dry ion's tail is orders of magnitude weaker (checked over
+    # many seeds), so this doesn't depend on the random state.
+    playing, tail = audio[: audio.size // 2], audio[3 * audio.size // 4:]
+
+    def tail_ratio(f):
+        return _band_energy(tail, f, width=20) / _band_energy(
+            playing, f, width=20
+        )
+
+    assert tail_ratio(f_high) > 10 * tail_ratio(f_low)
 
 
 def test_mapped_effect_value_interpolates_and_rounds_ints():

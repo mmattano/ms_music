@@ -5,6 +5,16 @@
 # question without asking; MS_MUSIC_NO_PAUSE=1 skips the final key press.
 
 $ErrorActionPreference = 'Continue'
+# Started from PowerShell 7 (pwsh), Windows PowerShell inherits pwsh's
+# module path and then fails to load its own built-in modules
+# (Get-ExecutionPolicy, Get-Process, ...). Use Windows PowerShell's own.
+if ($PSVersionTable.PSVersion.Major -le 5) {
+    $env:PSModulePath = @(
+        (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules'),
+        (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'),
+        [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+    ) -join ';'
+}
 $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
 
 Write-Host ""; Write-Host "Removing ms_music" -ForegroundColor Cyan

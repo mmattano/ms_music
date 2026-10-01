@@ -11,6 +11,16 @@
 # MS_MUSIC_NO_PAUSE=1 (don't wait for a key at the end).
 
 $ErrorActionPreference = 'Stop'
+# Started from PowerShell 7 (pwsh), Windows PowerShell inherits pwsh's
+# module path and then fails to load its own built-in modules
+# (Get-ExecutionPolicy, Get-Process, ...). Use Windows PowerShell's own.
+if ($PSVersionTable.PSVersion.Major -le 5) {
+    $env:PSModulePath = @(
+        (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules'),
+        (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'),
+        [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+    ) -join ';'
+}
 $Package = if ($env:MS_MUSIC_PACKAGE) { $env:MS_MUSIC_PACKAGE } else { 'ms_music' }
 $PythonVersion = '3.12'
 
