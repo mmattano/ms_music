@@ -154,7 +154,16 @@ cython_debug/
 
 # additional
 .DS_Store
+.vscode/
 .Rhistory
+
+# Generated example outputs (large audio/MIDI/video artifacts)
+examples/output/
+examples/output_*/
+examples/*_videos/
+examples/complete_videos/
+examples/fid_processed.wav
+examples/video_output/
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

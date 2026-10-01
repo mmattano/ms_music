@@ -1,6 +1,7 @@
 import numpy as np
 import librosa
 from scipy import signal
+from scipy.ndimage import maximum_filter1d
 import warnings
 
 TAU = 2 * np.pi
@@ -427,25 +428,18 @@ def apply_delay(
 
     feedback = np.clip(feedback, 0.0, 0.95)  # Prevent instability
 
-    # Create delay line
-    delay_line = np.zeros(len(audio_float) + delay_samples * num_taps)
-    delay_line[: len(audio_float)] = audio_float
-
     wet_signal = np.zeros_like(audio_float)
 
-    # Process each tap
+    # Each tap is an echo at tap_delay samples behind.
+    # Gain = feedback^tap * 0.7^tap so successive echoes decay naturally.
     for tap in range(num_taps):
         tap_delay = delay_samples * (tap + 1)
-        tap_gain = 0.7**tap  # Decrease gain for each tap
-
-        for i in range(len(audio_float)):
-            if i + tap_delay < len(delay_line):
-                # Add delayed signal with feedback
-                delayed_sample = delay_line[i + tap_delay]
-                delay_line[i + tap_delay] += (
-                    audio_float[i] * feedback * tap_gain
-                )
-                wet_signal[i] += delayed_sample * tap_gain
+        if tap_delay >= len(audio_float):
+            break
+        tap_gain = (feedback * 0.7) ** tap
+        wet_signal[tap_delay:] += (
+            audio_float[: len(audio_float) - tap_delay] * tap_gain
+        )
 
     return _apply_dry_wet_mix(audio_float, wet_signal, dry_wet_mix)
 
@@ -512,39 +506,39 @@ def apply_chorus(
     depth_samples = int(depth_ms * sample_rate / 1000.0)
     feedback = np.clip(feedback, 0.0, 0.9)
 
-    wet_signal = np.zeros_like(audio_float)
+    n = len(audio_float)
+    t = np.arange(n) / sample_rate
+    indices = np.arange(n, dtype=np.float64)
+    wet_signal = np.zeros(n, dtype=np.float64)
 
     for voice in range(num_voices):
-        # Different LFO phase and rate for each voice
         phase_offset = (TAU * voice) / num_voices
-        voice_rate = rate_hz * (
-            0.8 + 0.4 * voice / num_voices
-        )  # Slight rate variations
+        voice_rate = rate_hz * (0.8 + 0.4 * voice / num_voices)
 
-        t = np.arange(len(audio_float)) / sample_rate
         lfo = depth_samples * np.sin(TAU * voice_rate * t + phase_offset)
+        read_pos = (
+            indices - delay_samples_base - lfo
+        )  # fractional read positions
 
-        voice_output = np.zeros_like(audio_float)
+        # Clamp to valid range
+        read_pos = np.clip(read_pos, 0.0, n - 1.0)
 
-        # Simple delay line implementation
-        for i in range(len(audio_float)):
-            delay_amount = delay_samples_base + lfo[i]
-            delay_idx = i - int(delay_amount)
+        # Vectorised linear interpolation
+        idx_floor = read_pos.astype(int)
+        frac = read_pos - idx_floor
+        idx_ceil = np.minimum(idx_floor + 1, n - 1)
 
-            if delay_idx >= 0:
-                # Linear interpolation for fractional delays
-                frac = delay_amount - int(delay_amount)
-                if delay_idx + 1 < len(audio_float):
-                    sample = (1 - frac) * audio_float[
-                        delay_idx
-                    ] + frac * audio_float[delay_idx + 1]
-                else:
-                    sample = audio_float[delay_idx]
-                voice_output[i] = sample
+        voice_output = (1.0 - frac) * audio_float[
+            idx_floor
+        ] + frac * audio_float[idx_ceil]
+        # Zero out samples where the read position hasn't started yet
+        voice_output[read_pos < 0] = 0.0
 
         wet_signal += voice_output / num_voices
 
-    return _apply_dry_wet_mix(audio_float, wet_signal, dry_wet_mix)
+    return _apply_dry_wet_mix(
+        audio_float, wet_signal.astype(np.float32), dry_wet_mix
+    )
 
 
 def apply_flanger(
@@ -571,32 +565,71 @@ def apply_flanger(
     t = np.arange(len(audio_float)) / sample_rate
     lfo = np.sin(TAU * rate_hz * t)
 
-    # Create delay line with feedback
-    max_delay = base_delay_samples + depth_samples + 1
-    delay_line = np.zeros(len(audio_float) + max_delay)
-    delay_line[: len(audio_float)] = audio_float
-
+    # Mutable buffer: audio_float + accumulated feedback.
+    # Writing feedback to buffer[i] (current position) means future samples
+    # that read buffer[i] as a past position will see the recirculated signal.
+    buffer = np.copy(audio_float)
     wet_signal = np.zeros_like(audio_float)
+    n = len(audio_float)
 
-    for i in range(len(audio_float)):
-        # Calculate variable delay
-        current_delay = base_delay_samples + depth_samples * lfo[i]
-        delay_idx = int(current_delay)
+    # The minimum possible delay is base - depth (when the LFO is at -1). Any
+    # sample's delayed read therefore lands at least d_min samples in the past,
+    # so samples within a window of length d_min are mutually independent and
+    # can be computed as a vectorized block. This is bit-for-bit equivalent to
+    # the scalar recurrence below, just far faster on long audio.
+    d_min = base_delay_samples - depth_samples
+
+    if d_min >= 1:
+        # Everything except the buffer gathers is independent of the feedback,
+        # so precompute it once over the whole signal; the per-block loop then
+        # only does the two delayed reads and the feedback write.
+        positions = np.arange(n)
+        current_delay = base_delay_samples + depth_samples * lfo
+        # current_delay >= d_min > 0 everywhere, so floor == int() truncation.
+        delay_idx = np.floor(current_delay).astype(int)
         frac = current_delay - delay_idx
+        one_minus_frac = 1.0 - frac
+        past = positions - delay_idx
+        past2 = past - 1
+        valid_interp = (past >= 0) & (past2 >= 0)
+        valid_single = past >= 0
+        safe_past = np.clip(past, 0, None)
+        safe_past2 = np.clip(past2, 0, None)
 
-        # Get delayed sample with interpolation
-        if i - delay_idx >= 0 and i - delay_idx - 1 >= 0:
-            delayed_sample = (1 - frac) * delay_line[
-                i - delay_idx
-            ] + frac * delay_line[i - delay_idx - 1]
-        else:
-            delayed_sample = 0.0
+        for start in range(0, n, d_min):
+            sl = slice(start, min(start + d_min, n))
+            b_past = buffer[safe_past[sl]]
+            b_past2 = buffer[safe_past2[sl]]
+            interp = one_minus_frac[sl] * b_past + frac[sl] * b_past2
+            delayed = np.where(
+                valid_interp[sl],
+                interp,
+                np.where(valid_single[sl], b_past, 0.0),
+            )
+            wet_signal[sl] = delayed
+            buffer[sl] = audio_float[sl] + delayed * feedback
+    else:
+        # depth >= base delay: the mutual-independence window collapses, so
+        # fall back to the exact scalar recurrence.
+        for i in range(n):
+            current_delay = base_delay_samples + depth_samples * lfo[i]
+            delay_idx = int(current_delay)
+            frac = current_delay - delay_idx
 
-        # Add feedback
-        if i + delay_idx < len(delay_line):
-            delay_line[i + delay_idx] += delayed_sample * feedback
+            past_idx = i - delay_idx
+            past_idx2 = i - delay_idx - 1
 
-        wet_signal[i] = delayed_sample
+            if past_idx >= 0 and past_idx2 >= 0:
+                delayed_sample = (1 - frac) * buffer[past_idx] + frac * buffer[
+                    past_idx2
+                ]
+            elif past_idx >= 0:
+                delayed_sample = buffer[past_idx]
+            else:
+                delayed_sample = 0.0
+
+            wet_signal[i] = delayed_sample
+            buffer[i] = audio_float[i] + delayed_sample * feedback
 
     return _apply_dry_wet_mix(audio_float, wet_signal, dry_wet_mix)
 
@@ -617,41 +650,45 @@ def apply_phaser(
 
     feedback = np.clip(feedback, -0.95, 0.95)
 
-    # Create LFO for modulation
-    t = np.arange(len(audio_float)) / sample_rate
-    lfo = np.sin(TAU * rate_hz * t)
-
-    # All-pass filter frequency range
+    # LFO sweeps the all-pass pole frequency between min_freq and max_freq
     min_freq = 200.0
     max_freq = 2000.0
 
-    wet_signal = np.copy(audio_float)
+    t = np.arange(len(audio_float)) / sample_rate
+    lfo = np.sin(TAU * rate_hz * t)
+    mod_freqs = min_freq + (max_freq - min_freq) * (0.5 + 0.5 * depth * lfo)
 
-    # Create all-pass filters for each stage
-    for stage in range(stages):
-        stage_output = np.zeros_like(audio_float)
-        z1 = 0.0  # State variable for all-pass
+    # First-order all-pass coefficient per sample:
+    #   a[n] = (tan(pi*fc[n]/fs) - 1) / (tan(pi*fc[n]/fs) + 1)
+    tan_vals = np.tan(np.pi * mod_freqs / sample_rate)
+    a_coeff = (tan_vals - 1.0) / (tan_vals + 1.0)  # shape (N,)
 
-        for i in range(len(audio_float)):
-            # Modulate all-pass frequency
-            mod_freq = min_freq + (
-                max_freq - min_freq
-                ) * (0.5 + 0.5 * depth * lfo[i])
+    # Process each all-pass stage.  We can't use scipy.signal.lfilter directly
+    # because the coefficients vary per sample, so we block-process: divide the
+    # signal into short segments over which the coefficient is nearly constant,
+    # apply lfilter per block, and carry the filter state between blocks.
+    wet_signal = audio_float.copy()
+    block_size = max(64, len(audio_float) // 512)  # ~512 blocks
 
-            # All-pass coefficient from frequency
-            # a = (tan(pi * fc / fs) - 1) / (tan(pi * fc / fs) + 1)
-            tan_val = np.tan(np.pi * mod_freq / sample_rate)
-            a = (tan_val - 1) / (tan_val + 1)
+    for _stage in range(stages):
+        stage_out = np.empty_like(wet_signal)
+        zi = np.zeros(1)  # 1st-order filter state
 
-            # First-order all-pass: y[n] = a*x[n] + x[n-1] - a*y[n-1]
-            # Simplified: y[n] = a*x[n] + z1
-            # where z1 = x[n-1] - a*y[n-1]
-            stage_output[i] = a * wet_signal[i] + z1
-            z1 = wet_signal[i] - a * stage_output[i]
+        for start in range(0, len(wet_signal), block_size):
+            end = min(start + block_size, len(wet_signal))
+            # Use the median coefficient for this block (good approximation
+            # when block_size << modulation period in samples)
+            a = float(np.median(a_coeff[start:end]))
+            b_ap = np.array([a, 1.0])
+            a_ap = np.array([1.0, a])
+            block_out, zi = signal.lfilter(
+                b_ap, a_ap, wet_signal[start:end], zi=zi
+            )
+            stage_out[start:end] = block_out
 
-        wet_signal = stage_output
+        wet_signal = stage_out
 
-    # Add feedback
+    # Mix with feedback
     wet_signal = audio_float + wet_signal * feedback
 
     return _apply_dry_wet_mix(audio_float, wet_signal, dry_wet_mix)
@@ -810,26 +847,31 @@ def apply_limiter(
 
     # Pad audio for lookahead
     padded_audio = np.pad(audio_float, (lookahead_samples, 0), mode="constant")
-    output = np.zeros_like(padded_audio)
 
+    # Peak of the next `window` samples at every position (vectorized; the
+    # window always includes the current sample).
+    window = max(lookahead_samples, 1)
+    future_peaks = maximum_filter1d(
+        np.abs(padded_audio),
+        size=window,
+        origin=-(window // 2),
+        mode="constant",
+        cval=0.0,
+    )
+
+    release_step = 1.0 - release_coeff
+    gains = np.empty(len(padded_audio), dtype=np.float64)
     gain_reduction = 1.0
-
-    for i in range(len(padded_audio)):
-        # Look ahead for peaks
-        future_peak = 0.0
-        for j in range(min(lookahead_samples, len(padded_audio) - i)):
-            future_peak = max(future_peak, abs(padded_audio[i + j]))
-
+    for i, future_peak in enumerate(future_peaks.tolist()):
         # Calculate required gain reduction
         if future_peak * gain_reduction > threshold_linear:
-            required_gain = threshold_linear / future_peak
-            gain_reduction = min(gain_reduction, required_gain)
+            gain_reduction = min(gain_reduction, threshold_linear / future_peak)
         else:
             # Release
-            gain_reduction = min(1.0, gain_reduction + (1 - release_coeff))
+            gain_reduction = min(1.0, gain_reduction + release_step)
+        gains[i] = gain_reduction
 
-        output[i] = padded_audio[i] * gain_reduction
-
+    output = (padded_audio * gains).astype(padded_audio.dtype)
     return output[lookahead_samples:]
 
 
@@ -908,16 +950,13 @@ def apply_overdrive(
     # Apply overdrive using asymmetric clipping
     driven_signal = audio_float * drive
 
-    # Asymmetric soft clipping (tube-like)
-    output = np.zeros_like(driven_signal)
-    for i in range(len(driven_signal)):
-        x = driven_signal[i]
-        if x > 0:
-            # Positive half - softer clipping
-            output[i] = np.tanh(x * 0.7)
-        else:
-            # Negative half - harder clipping
-            output[i] = np.tanh(x * 0.9)
+    # Asymmetric soft clipping (tube-like): softer on the positive half,
+    # harder on the negative half.
+    output = np.where(
+        driven_signal > 0,
+        np.tanh(driven_signal * 0.7),
+        np.tanh(driven_signal * 0.9),
+    )
 
     # Post-EQ based on tone control
     if tone < 0.5:
@@ -1099,29 +1138,32 @@ def apply_vibrato(
 
     t = np.arange(len(audio_float)) / sample_rate
 
-    # Convert cents to frequency ratio
+    # Convert cents to the frequency-ratio deviation we want.
     depth_ratio = 2 ** (depth_cents / 1200.0) - 1.0
 
-    # Generate modulation
-    lfo = np.sin(TAU * rate_hz * t)
-    pitch_mod = 1.0 + depth_ratio * lfo
+    # For a sinusoidal delay d(t) = A*sin(omega*t), the instantaneous
+    # playback-rate deviation is  d/dt(d) = A*omega*cos(omega*t).
+    # To achieve a max pitch-ratio of depth_ratio we need 
+    # A*omega = depth_ratio,
+    # so  A = depth_ratio / omega  (in samples).
+    omega_samp = TAU * rate_hz / sample_rate
+    A_samples = depth_ratio / omega_samp if omega_samp > 0 else 0.0
 
-    # Apply pitch modulation using time-varying delay
+    delay_offsets = A_samples * np.sin(TAU * rate_hz * t)  # samples
+
     output = np.zeros_like(audio_float)
-    phase = 0.0
-
-    for i in range(len(audio_float)):
-        # Variable sample rate
-        phase_increment = pitch_mod[i]
-        phase += phase_increment
-
-        # Interpolate
-        if phase < len(audio_float) - 1:
-            idx = int(phase)
-            frac = phase - idx
-            output[i] = (1 - frac) * audio_float[idx] + frac * audio_float[
+    n = len(audio_float)
+    for i in range(n):
+        read_pos = float(i) - delay_offsets[i]
+        read_pos = max(0.0, min(float(n - 1), read_pos))
+        idx = int(read_pos)
+        frac = read_pos - idx
+        if idx + 1 < n:
+            output[i] = (1.0 - frac) * audio_float[idx] + frac * audio_float[
                 idx + 1
             ]
+        else:
+            output[i] = audio_float[idx]
 
     return output
 
@@ -1217,15 +1259,13 @@ def apply_auto_wah(
         env_scaled = min(1.0, envelope * sensitivity)
         freq_idx = int(env_scaled * (freq_steps - 1))
 
-        # Simple one-sample filter application (approximation)
+        # Per-sample 2nd-order IIR (Direct Form I)
         b, a = filter_bank[freq_idx]
-        if len(b) > 1 and len(a) > 1:
-            # Simple IIR filter approximation
-            output[i] = b[0] * audio_float[i]
-            if i > 0:
-                output[i] += b[1] * audio_float[i - 1] - a[1] * output[i - 1]
-        else:
-            output[i] = audio_float[i]
+        output[i] = b[0] * audio_float[i]
+        if i > 0 and len(b) > 1:
+            output[i] += b[1] * audio_float[i - 1] - a[1] * output[i - 1]
+        if i > 1 and len(b) > 2:
+            output[i] += b[2] * audio_float[i - 2] - a[2] * output[i - 2]
 
     return output
 
@@ -1264,7 +1304,7 @@ def apply_spectral_gate(
     audio_data: np.ndarray,
     sample_rate: int,
     threshold_db: float = -30.0,
-    n_fft: int = 2048
+    n_fft: int = 2048,
 ) -> np.ndarray:
     """
     Spectral gating - remove spectral components below threshold.
@@ -1355,10 +1395,8 @@ def apply_pitch_shift(
 
 
 def apply_time_stretch(
-        audio_data: np.ndarray,
-        sample_rate: int,
-        rate: float
-        ) -> np.ndarray:
+    audio_data: np.ndarray, sample_rate: int, rate: float
+) -> np.ndarray:
     """Time stretching using phase vocoder."""
     audio_float = _validate_audio_input(audio_data, "Time Stretch")
     if audio_float.size == 0:
@@ -1559,8 +1597,9 @@ def apply_adaptive_filter(
 
         error = desired - y
 
-        # Update weights
-        w = w + mu * error * x
+        # Update weights; dividing by the input power once it exceeds 1
+        # (normalized LMS) keeps loud input from diverging to NaN.
+        w = w + mu * error * x / max(1.0, float(np.dot(x, x)))
 
     return output
 
@@ -1637,7 +1676,7 @@ def apply_granular_synthesis(
             )
             grain = librosa.effects.pitch_shift(
                 grain, sr=sample_rate, n_steps=pitch_shift
-                )
+            )
 
         # Apply window and add to output
         windowed_grain = grain * grain_window
@@ -1982,8 +2021,10 @@ def apply_shelving_eq(
 
 # Utility effects
 def apply_normalize(
-    audio_data: np.ndarray, sample_rate: int, target_db: float = -3.0,
-    mode: str = "peak"
+    audio_data: np.ndarray,
+    sample_rate: int,
+    target_db: float = -3.0,
+    mode: str = "peak",
 ) -> np.ndarray:
     """
     Normalize audio to target level.

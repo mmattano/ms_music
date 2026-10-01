@@ -36,6 +36,39 @@ class QuantizationMode(Enum):
     ADAPTIVE = "adaptive"  # Adapt grid to data characteristics
 
 
+def _coerce_meter(value: str) -> MusicMeter:
+    """Coerce a string to a MusicMeter.
+
+    Accepts enum member names (``"THREE_FOUR"``) and musical notation
+    (``"3/4"``). Raises ValueError on anything unrecognized rather than
+    silently defaulting.
+    """
+    key = value.strip().upper().replace("/", "_")
+    if hasattr(MusicMeter, key):
+        return MusicMeter[key]
+    if "/" in value:
+        try:
+            beats, note_value = (int(part) for part in value.split("/"))
+            return MusicMeter((beats, note_value))
+        except (ValueError, KeyError):
+            pass
+    raise ValueError(
+        f"Unknown meter {value!r}. Use notation like '3/4' or a member "
+        f"name like 'THREE_FOUR'."
+    )
+
+
+def _coerce_quant_mode(value: str) -> QuantizationMode:
+    """Coerce a string to a QuantizationMode, raising on unknown values."""
+    key = value.strip().upper()
+    if hasattr(QuantizationMode, key):
+        return QuantizationMode[key]
+    raise ValueError(
+        f"Unknown quantization mode {value!r}. Expected one of: "
+        f"{', '.join(m.name for m in QuantizationMode)}."
+    )
+
+
 @dataclass
 class NoteLength:
     """Represents musical note lengths in terms of beats."""
@@ -109,8 +142,11 @@ class MetricalQuantizer:
         # Calculate measure length in ticks
         self.ticks_per_measure = self.ticks_per_beat * meter.beats_per_measure
 
-        # Define available note lengths
+        # Define available note lengths (short → long so quantize_duration
+        # can also handle wide chromatographic peaks spanning many bars)
         self.note_lengths = [
+            NoteLength("4-bar", 16.0, ticks_per_beat),
+            NoteLength("2-bar", 8.0, ticks_per_beat),
             NoteLength.whole_note(ticks_per_beat),
             NoteLength.half_note(ticks_per_beat),
             NoteLength.dotted_quarter(ticks_per_beat),
@@ -158,9 +194,8 @@ class MetricalQuantizer:
         return sorted(list(set(grid_positions)))
 
     def quantize_onset_time(
-            self,
-            time_ticks: int,
-            measure_offset: int = 0) -> int:
+        self, time_ticks: int, measure_offset: int = 0
+    ) -> int:
         """
         Quantize an onset time to the nearest grid position.
 
@@ -217,8 +252,10 @@ class MetricalQuantizer:
         return max(0, int(round(quantized_time)))
 
     def quantize_duration(
-        self, duration_ticks: int, intensity: float = 0.5,
-        peak_width_seconds: float = None
+        self,
+        duration_ticks: int,
+        intensity: float = 0.5,
+        peak_width_seconds: float = None,
     ) -> int:
         """
         Quantize note duration based primarily on peak width.
@@ -231,21 +268,28 @@ class MetricalQuantizer:
         Returns:
             Quantized duration in ticks
         """
+        max_note_beats = max(nl.beats for nl in self.note_lengths)
+
         if peak_width_seconds is not None and peak_width_seconds > 0:
-            # Convert peak width directly to beats
             seconds_per_beat = 60.0 / self.tempo
             peak_beats = peak_width_seconds / seconds_per_beat
 
-            # Find closest musical note length
+            # If the peak is wider than the largest standard length, use the
+            # raw beat count converted to ticks so long chromatographic peaks
+            # are not artificially shortened.
+            if peak_beats > max_note_beats:
+                return max(1, int(round(peak_beats * self.ticks_per_beat)))
+
             closest_length = min(
                 self.note_lengths, key=lambda x: abs(x.beats - peak_beats)
             )
-
             return max(1, int(round(closest_length.ticks)))
 
         # Fallback: use original duration_ticks if no peak width
         if duration_ticks > 0:
             duration_beats = duration_ticks / self.ticks_per_beat
+            if duration_beats > max_note_beats:
+                return max(1, duration_ticks)
             closest_length = min(
                 self.note_lengths, key=lambda x: abs(x.beats - duration_beats)
             )
@@ -786,6 +830,37 @@ class MusicalNoteQuantizer:
 
         return closest_note
 
+    def quantize_frequency(self, frequency):
+        """Find the closest musical note using linear frequency distance.
+
+        Mirrors :meth:`quantize_frequency_log` but measures nearness in
+        linear (Hz) space instead of logarithmic space. Used when the
+        caller requests ``use_log_distance=False``.
+        """
+        if not self.note_frequencies:
+            return {
+                "frequency": frequency,
+                "note": "N/A",
+                "octave": 0,
+                "midi_note": 60,
+            }
+
+        if frequency <= 0:
+            return self.note_frequencies[0]
+
+        min_distance = float("inf")
+        closest_note = None
+
+        for note_info in self.note_frequencies:
+            distance = abs(note_info["frequency"] - frequency)
+            if distance < min_distance:
+                min_distance = distance
+                closest_note = note_info.copy()
+                closest_note["original_frequency"] = frequency
+                closest_note["linear_distance"] = distance
+
+        return closest_note
+
     def quantize_with_meter(
         self,
         frequency,
@@ -835,16 +910,27 @@ class MusicalNoteQuantizer:
         return note_info
 
 
-def mz_to_frequency_inverse_log(mz_value, freq_range, min_mz_overall,
-                                max_mz_overall):
+def normalized_mz(mz_value, min_mz, max_mz):
+    """Position of ``mz_value`` in [min_mz, max_mz], clipped to 0..1.
+
+    0 when the range is empty (all data in one m/z bin), instead of 0/0.
+    """
+    span = max_mz - min_mz
+    if not span > 0:
+        return 0.0
+    return float(np.clip((mz_value - min_mz) / span, 0, 1))
+
+
+def mz_to_frequency_inverse_log(
+    mz_value, freq_range, min_mz_overall, max_mz_overall
+):
     """Maps m/z values to frequencies using inverse logarithmic scaling."""
     if mz_value <= 0 or min_mz_overall <= 0:
         return freq_range[0]
 
-    mz_normalized = (mz_value - min_mz_overall) / (
-        max_mz_overall - min_mz_overall
+    mz_normalized = normalized_mz(
+        mz_value, min_mz_overall, max_mz_overall
     )
-    mz_normalized = np.clip(mz_normalized, 0, 1)
 
     log_ratio = math.log(freq_range[1] / freq_range[0])
     frequency = freq_range[1] * math.exp(-mz_normalized * log_ratio)
@@ -852,16 +938,16 @@ def mz_to_frequency_inverse_log(mz_value, freq_range, min_mz_overall,
     return frequency
 
 
-def mz_to_frequency_power_law(mz_value, freq_range, min_mz_overall,
-                              max_mz_overall, exponent=1.5):
+def mz_to_frequency_power_law(
+    mz_value, freq_range, min_mz_overall, max_mz_overall, exponent=1.5
+):
     """Maps m/z values using a power law relationship."""
     if mz_value <= 0:
         return freq_range[0]
 
-    mz_normalized = (mz_value - min_mz_overall) / (
-        max_mz_overall - min_mz_overall
+    mz_normalized = normalized_mz(
+        mz_value, min_mz_overall, max_mz_overall
     )
-    mz_normalized = np.clip(mz_normalized, 0, 1)
 
     freq_normalized = (1 - mz_normalized) ** exponent
 
@@ -881,10 +967,9 @@ def mz_to_frequency_musical_octaves(
     if mz_value <= 0:
         return base_freq
 
-    mz_normalized = (mz_value - min_mz_overall) / (
-        max_mz_overall - min_mz_overall
+    mz_normalized = normalized_mz(
+        mz_value, min_mz_overall, max_mz_overall
     )
-    mz_normalized = np.clip(mz_normalized, 0, 1)
 
     mz_inverted = 1 - mz_normalized
     octave_position = mz_inverted * num_octaves
@@ -894,17 +979,19 @@ def mz_to_frequency_musical_octaves(
 
 
 def mz_to_frequency_chromatic(
-    mz_value, min_mz_overall, max_mz_overall, base_freq=261.63,
-    num_semitones=48
+    mz_value,
+    min_mz_overall,
+    max_mz_overall,
+    base_freq=261.63,
+    num_semitones=48,
 ):
     """Maps m/z to frequencies using chromatic scale."""
     if mz_value <= 0:
         return base_freq
 
-    mz_normalized = (mz_value - min_mz_overall) / (
-        max_mz_overall - min_mz_overall
+    mz_normalized = normalized_mz(
+        mz_value, min_mz_overall, max_mz_overall
     )
-    mz_normalized = np.clip(mz_normalized, 0, 1)
     mz_inverted = 1 - mz_normalized
 
     semitone_position = mz_inverted * num_semitones
@@ -913,15 +1000,15 @@ def mz_to_frequency_chromatic(
     return frequency
 
 
-def mz_to_frequency_linear(mz_value, freq_range, min_mz_overall,
-                           max_mz_overall):
+def mz_to_frequency_linear(
+    mz_value, freq_range, min_mz_overall, max_mz_overall
+):
     """Maps m/z values to frequencies using linear scaling."""
     if mz_value <= 0:
         return freq_range[0]
 
-    mz_normalized = (mz_value - min_mz_overall) / (
-        max_mz_overall - min_mz_overall
+    mz_normalized = normalized_mz(
+        mz_value, min_mz_overall, max_mz_overall
     )
-    mz_normalized = np.clip(mz_normalized, 0, 1)
 
     return freq_range[0] + mz_normalized * (freq_range[1] - freq_range[0])
